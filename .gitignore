@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Project Exlusions
+dist/
+models/
+reference_voices/
+tests_output/
+
 # C extensions
 *.so
 
