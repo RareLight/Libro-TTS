@@ -9,6 +9,15 @@ models/
 reference_voices/
 tests_output/
 
+# Media Files
+*.wav
+*.txt
+*.mp3
+*.m4a
+
+# macOS Metadata
+.DS_Store
+
 # C extensions
 *.so
 
