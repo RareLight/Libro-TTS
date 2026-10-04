@@ -54,3 +54,7 @@ The benchmark accepts `--model`, `--models-dir`, `--offline`, worker/batch limit
 ## Current selected-model acceptance
 
 On October 4, 2026, the user confirmed that both supplied default Kokoro/Soprano samples work as expected and preferred Kokoro's slightly more natural speech. Kokoro remains the default. This closes listening acceptance for those samples; it does not establish all-family or extended-duration speech acceptance. Larger-family tests and release portability remain deferred.
+
+## Portable transfers
+
+Technical Kokoro/Soprano relocation checks passed on October 4, 2026. Export with `.venv/bin/python scripts/export_portable_build.py`, move the source/model bundle, and recreate `.venv` at its destination using `bash scripts/setup.sh --no-dev`. Initial setup requires network access or a prepared dependency cache; included validated models then support offline generation. A personal bundle includes existing reference voices. [Portability evidence/instructions](portability-2026-10-04.md) describe export exclusions, guarded same-machine results, and the separate second-Mac/public-distribution gates. Earlier release-portability deferrals were reopened for this technical check; larger-family verification remains deferred.

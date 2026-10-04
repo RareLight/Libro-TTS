@@ -273,6 +273,18 @@ Optional second pass to verify offline local reuse:
 .venv/bin/python tests/integration_run_all_models.py --run --offline-second-pass
 ```
 
+## Portability
+
+Export the source, lock/setup helpers, available model/cache data, and reference voices with:
+
+```bash
+.venv/bin/python scripts/export_portable_build.py --output-dir dist/Libro-TTS-portable
+```
+
+Move the folder to an Apple Silicon Mac, then run `bash scripts/setup.sh --no-dev` there. Recreate `.venv` after a move; it is deliberately excluded from exports. Initial dependency/Python installation needs uv and internet access or a prepared cache. Included complete Kokoro/Soprano models support offline generation after setup. Internal cache symlinks and manifest paths are relative; external/broken links fail export, and credentials/partial/cache metadata are excluded. Existing private reference voices are included when present.
+
+See [portability verification and transfer instructions](docs/portability-2026-10-04.md) for same-machine relocation evidence and the remaining second-Mac/public-distribution gates.
+
 ## Notes
 
 - Quality-first policy: model conversion/downloading is full precision only (no quantization).

@@ -1,0 +1,135 @@
+{
+  "date": "2026-10-04",
+  "different_physical_mac_verified": false,
+  "method": "Fresh dedicated managed Python/uv cache; recreated bundle environments; Python audit guards against original checkout/global model caches; internet socket guards inherited by preflight and spawned workers; no Homebrew on runtime PATH.",
+  "platform": "macOS arm64",
+  "reports": {
+    "first_relocation": {
+      "bundle": "/private/tmp/libro-portability-20261004-final/relocated Libro bundle",
+      "environment": {
+        "base_prefix": "/private/tmp/libro-portability-python/cpython-3.12.13-macos-aarch64-none",
+        "distributions": 114,
+        "ffmpeg": "/private/tmp/libro-portability-20261004-final/relocated Libro bundle/.venv/lib/python3.12/site-packages/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1",
+        "prefix": "/private/tmp/libro-portability-20261004-final/relocated Libro bundle/.venv",
+        "python": "3.12.13"
+      },
+      "homebrew_absent_from_path": true,
+      "internet_connections_blocked": true,
+      "original_checkout_access_blocked": true,
+      "outputs": [
+        {
+          "bytes": 1558844,
+          "channels": 1,
+          "format": "wav",
+          "frames": 779400,
+          "mode": "serial",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-evidence-20261004/kokoro-serial.wav",
+          "sample_rate": 24000
+        },
+        {
+          "bytes": 1558844,
+          "channels": 1,
+          "format": "wav",
+          "frames": 779400,
+          "mode": "parallel",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-evidence-20261004/kokoro-parallel.wav",
+          "sample_rate": 24000
+        },
+        {
+          "bytes": 1859628,
+          "channels": 1,
+          "format": "wav",
+          "frames": 929792,
+          "mode": "serial",
+          "model": "soprano",
+          "path": "/private/tmp/libro-portability-evidence-20261004/soprano-serial.wav",
+          "sample_rate": 32000
+        },
+        {
+          "bytes": 1908780,
+          "channels": 1,
+          "format": "wav",
+          "frames": 954368,
+          "mode": "parallel",
+          "model": "soprano",
+          "path": "/private/tmp/libro-portability-evidence-20261004/soprano-parallel.wav",
+          "sample_rate": 32000
+        },
+        {
+          "bytes": 71468,
+          "channels": 1,
+          "format": "mp3",
+          "frames": 105000,
+          "mode": "serial",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-evidence-20261004/kokoro.mp3",
+          "sample_rate": 24000
+        },
+        {
+          "bytes": 98144,
+          "channels": 1,
+          "format": "flac",
+          "frames": 105000,
+          "mode": "serial",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-evidence-20261004/kokoro.flac",
+          "sample_rate": 24000
+        }
+      ],
+      "success": true
+    },
+    "second_relocation": {
+      "bundle": "/private/tmp/libro-portability-20261004-final/second location/Libro bundle",
+      "environment": {
+        "base_prefix": "/private/tmp/libro-portability-python/cpython-3.12.13-macos-aarch64-none",
+        "distributions": 114,
+        "ffmpeg": "/private/tmp/libro-portability-20261004-final/second location/Libro bundle/.venv/lib/python3.12/site-packages/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1",
+        "prefix": "/private/tmp/libro-portability-20261004-final/second location/Libro bundle/.venv",
+        "python": "3.12.13"
+      },
+      "homebrew_absent_from_path": true,
+      "internet_connections_blocked": true,
+      "original_checkout_access_blocked": true,
+      "outputs": [
+        {
+          "bytes": 1558844,
+          "channels": 1,
+          "format": "wav",
+          "frames": 779400,
+          "mode": "serial",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-second-evidence-20261004/kokoro-serial.wav",
+          "sample_rate": 24000
+        },
+        {
+          "bytes": 71468,
+          "channels": 1,
+          "format": "mp3",
+          "frames": 105000,
+          "mode": "serial",
+          "model": "kokoro",
+          "path": "/private/tmp/libro-portability-second-evidence-20261004/kokoro.mp3",
+          "sample_rate": 24000
+        }
+      ],
+      "success": true
+    }
+  },
+  "same_physical_machine": true,
+  "scope": [
+    "kokoro",
+    "soprano"
+  ],
+  "self_contained_relative_model_symlinks": 9,
+  "source_commit": "5002d5b",
+  "source_manifest_and_model_configs_unchanged": true,
+  "user_transfer_acceptance": {
+    "date": "2026-10-04",
+    "location_changed": true,
+    "physical_machine_changed": "not specified",
+    "result": "passed",
+    "source": "User reported copying the prepared package to a new location and testing it successfully."
+  }
+}

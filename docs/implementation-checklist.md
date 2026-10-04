@@ -4,7 +4,7 @@ Based on [the October 2, 2026 assessment](quality-control-2026-10-02.md). Each c
 
 Preserve the current CLI defaults, model quality policy, voice/reference files, and unrelated changes. Keep Python dependencies in a disposable project `.venv` and model assets in persistent `models/`. Changes to execution defaults require measurements. Heavy model tests and subjective listening remain separate from fast automated checks.
 
-Scope update October 3, 2026: the user does not require full Whisper or Chatterbox model verification for this work and has deferred release portability. Those checks remain unverified and are excluded from the current output-safety acceptance gates. A later scope decision limits real-model acceptance to Kokoro and Soprano for now; Qwen3, CSM, Dia, Spark, and Voxtral generation/resource checks are deferred.
+Scope update October 3, 2026: the user does not require full Whisper or Chatterbox model verification for this work and has deferred release portability. Those checks remain unverified and are excluded from the current output-safety acceptance gates. A later scope decision limits real-model acceptance to Kokoro and Soprano for now; Qwen3, CSM, Dia, Spark, and Voxtral generation/resource checks are deferred. On October 4, the user reopened technical portability checks for that selected scope; public-distribution and second-physical-Mac acceptance remain separate.
 
 ## 0. Baseline and delivery
 
@@ -91,7 +91,7 @@ Acceptance: no supported entry point silently uses user-global caches, and offli
 - [x] Write manifest/config metadata atomically and surface actionable errors.
 - [x] Test interrupted downloads, malformed manifests, missing primary assets, and concurrent different-model updates.
 - [x] Test relocated model-store fixtures and default catalog resolution against copied Kokoro/Soprano trees with an empty HF cache.
-- [ ] Test an isolated copied project with no original checkout or global cache. (Release portability deferred by the user.)
+- [x] Test relocated bundles with recreated environments, guarded original/global-cache reads, and offline generation. (Same-machine verification; a second physical Mac remains open.)
 - [x] Confirm default Kokoro/Soprano acquisitions preserve unquantized catalog snapshots and synthesize successfully.
 - [ ] Confirm real full-precision conversion behavior for a model requiring conversion. (Outside the current Kokoro/Soprano scope.)
 
@@ -104,7 +104,8 @@ Acceptance: no supported entry point silently uses user-global caches, and offli
 - [x] Keep base Python and macOS Metal/system frameworks documented as platform prerequisites.
 - [x] Verify WAV, MP3, and FLAC generation with Homebrew absent from `PATH`.
 - [x] Verify native encoder failure produces a useful error without damaging an existing output.
-- [ ] Validate portable export/recreation behavior and required license notices before distribution. (Release portability deferred by the user.)
+- [x] Validate portable export/recreation behavior and retention of the app license/present model cards.
+- [ ] Complete model/dependency redistribution-license/source-notice review before public distribution.
 
 ## 6. Correctness and recovery
 
@@ -156,9 +157,11 @@ Acceptance: no supported entry point silently uses user-global caches, and offli
 - [x] Validate Kokoro/Soprano online first-run/offline reuse on disposable model roots. (Other families remain outside the current acceptance scope.)
 - [x] Run long-chapter resource checks before changing parallel defaults.
 - [x] Complete human listening acceptance for the supplied default Kokoro/Soprano samples. (Accepted October 4, 2026; other families and extended listening remain outside scope.)
-- [ ] Export the committed lock and relative asset metadata rather than freezing a shared environment. (Lock-based export code/fixtures exist; release acceptance deferred.)
-- [ ] Exclude credentials, partial downloads, locks, and irrelevant cache state from portable exports. (Core exclusions have fixture coverage; final release audit deferred.)
-- [ ] Recreate `.venv` at the destination; test relocated portable releases. (Release portability deferred by the user.)
+- [x] Export the committed lock and relative asset metadata rather than freezing a shared environment.
+- [x] Exclude known HF credential filenames, partial downloads, locks, and irrelevant cache metadata; validate included symlinks before export.
+- [x] Recreate `.venv` at relocated destinations and verify selected-model offline execution.
+- [x] Obtain user acceptance after copying the prepared package to a new location. (Confirmed October 4, 2026.)
+- [ ] Confirm the bundle on a second physical Apple Silicon Mac before claiming cross-machine acceptance.
 - [x] Document dependency/model revision updates and their regression gates.
 
 ## Progress and evidence
@@ -310,3 +313,15 @@ Temporary evidence: `/private/tmp/libro-primary-acquisition-online.log`, `/priva
 The user listened to both supplied default parallel samples and confirmed that Kokoro and Soprano work as expected. Kokoro sounded slightly more natural to the user, reinforcing the existing default; no catalog default was changed. This closes the selected samples' human listening gate, alongside the already recorded clean-acquisition/offline serial/parallel and 239-test maintenance evidence. Larger-family verification, actual conversion for families requiring it, and release portability remain deferred/outside the selected scope. Hosted CI awaits publication through a push/PR.
 
 The QC implementation, tests, lock, workflow, documentation, and retained objective/subjective acceptance evidence are included in the delivery commit. Unrelated `.DS_Store` and pre-existing `.gitignore` changes are left outside that commit. Downloaded models, caches, private references, the virtual environment, and listening audio remain untracked.
+
+### October 4, 2026 portability verification
+
+The user reopened portability acceptance for the selected Kokoro/Soprano scope. Fixed export gaps: absolute legacy manifest entries/stale absent families, unchecked external/dangling symlinks, recursive destinations, incomplete final folders after failures, optional source-only asset folders, and exported cache logs/download metadata. Internal symlinks remain relative, complete primary inventories retain known revisions, and migration occurs only in the copied store. Existing source manifest/config bytes were verified unchanged. The app license, existing model cards/notices, setup/lock, and source-reference documentation are retained; `.venv` is recreated rather than copied.
+
+Fresh managed Python/dependency setup succeeded with a dedicated empty uv cache. The fixed bundle was moved before setup into a spaced path, then moved again after setup and its disposable `.venv` recreated offline from that warmed cache. Both environments used Python 3.12.13 and 114 runtime-only distributions entirely inside the new prefixes. Internet socket guards and Python filesystem audit guards rejected original/global-cache reads; Homebrew was excluded from runtime PATH. Negative probes confirmed guards in fresh processes, and spawn/preflight inherited them.
+
+Diagnostics, listing, Kokoro/Soprano serial/parallel WAV generation, and local MP3/FLAC encoding/decoding passed. All waveforms were finite/nonzero and no owned staging files remained. Nine internal cache links were checked after relocation. A second move/environment recreation passed diagnostics and Kokoro WAV/MP3 again. Full maintenance gate: 245 tests passed, dependency checks/Ruff/shell/no-download checks passed. Seven exporter tests cover the corrected boundaries. No larger-family generation or subjective reassessment was added.
+
+See [the portability report](portability-2026-10-04.md) and [retained JSON evidence](portability-2026-10-04.json). This establishes guarded same-machine technical transfer, not execution on a second physical Mac or public redistribution readiness. Those remain explicit gates; unrelated model-family/conversion deferrals remain unchanged.
+
+The user subsequently copied the prepared package to a new location, tested it, and confirmed that everything worked. This closes location-transfer acceptance. A different physical machine was not specified in that report.
