@@ -5,7 +5,6 @@ import unittest
 from unittest.mock import patch
 
 from libro_tts.catalog import get_model_spec
-from libro_tts.paths import project_root
 from libro_tts.runtime import (
     DEFAULT_PARALLEL_MAX_CHUNKS,
     DEFAULT_PARALLEL_WORKERS,
@@ -27,6 +26,15 @@ from libro_tts.store import ModelStore
 
 
 class RuntimeDefaultTests(unittest.TestCase):
+    def setUp(self):
+        self.reference_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        voices = self.reference_root / "reference_voices"
+        voices.mkdir()
+        for name in ("Britney", "Emma"):
+            (voices / f"{name}.wav").write_bytes(b"synthetic reference; synthesis is mocked")
+            (voices / f"{name}.txt").write_text("Synthetic reference transcript for tests.")
+        self.enterContext(patch("libro_tts.runtime.project_root", return_value=self.reference_root))
+
     def test_validate_local_model_path_accepts_csm_alias_model_type(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             model_dir = Path(tmp_dir) / "csm_local"
@@ -105,12 +113,14 @@ class RuntimeDefaultTests(unittest.TestCase):
             max_tokens=None,
             verbose=False,
         )
-        expected_audio = project_root() / "reference_voices" / "Britney.wav"
-        expected_text = (project_root() / "reference_voices" / "Britney.txt").read_text(
+        expected_audio = self.reference_root / "reference_voices" / "Britney.wav"
+        expected_text = (self.reference_root / "reference_voices" / "Britney.txt").read_text(
             encoding="utf-8"
         ).strip()
+        self.assertNotIn("ref_text", kwargs)
+        _populate_missing_ref_text(model_key="csm", kwargs=kwargs, logger=logging.getLogger("test"), verbose=False)
         self.assertEqual(kwargs["ref_audio"], str(expected_audio.resolve()))
-        self.assertEqual(kwargs["ref_text"], expected_text)
+        self.assertEqual(kwargs["ref_text"], " ".join(expected_text.split()))
         self.assertNotIn("voice", kwargs)
         self.assertEqual(kwargs["lang_code"], "en")
 
@@ -125,12 +135,14 @@ class RuntimeDefaultTests(unittest.TestCase):
             max_tokens=None,
             verbose=False,
         )
-        expected_audio = project_root() / "reference_voices" / "Britney.wav"
-        expected_text = (project_root() / "reference_voices" / "Britney.txt").read_text(
+        expected_audio = self.reference_root / "reference_voices" / "Britney.wav"
+        expected_text = (self.reference_root / "reference_voices" / "Britney.txt").read_text(
             encoding="utf-8"
         ).strip()
+        self.assertNotIn("ref_text", kwargs)
+        _populate_missing_ref_text(model_key="dia", kwargs=kwargs, logger=logging.getLogger("test"), verbose=False)
         self.assertEqual(kwargs["ref_audio"], str(expected_audio.resolve()))
-        self.assertEqual(kwargs["ref_text"], expected_text)
+        self.assertEqual(kwargs["ref_text"], " ".join(expected_text.split()))
         self.assertNotIn("voice", kwargs)
 
     def test_prompt_model_missing_voice_prompt_raises(self):
@@ -148,7 +160,7 @@ class RuntimeDefaultTests(unittest.TestCase):
 
     def test_populate_missing_ref_text_uses_existing_transcript(self):
         kwargs = {
-            "ref_audio": str((project_root() / "reference_voices" / "Britney.wav").resolve()),
+            "ref_audio": str((self.reference_root / "reference_voices" / "Britney.wav").resolve()),
         }
         _populate_missing_ref_text(
             model_key="dia",
@@ -208,6 +220,18 @@ class RuntimeDefaultTests(unittest.TestCase):
         )
         self.assertLessEqual(len(kwargs["ref_text"]), SPARK_MAX_REF_TEXT_CHARS)
 
+    @patch("libro_tts.runtime._auto_transcribe_reference_text", return_value="aligned transcript")
+    def test_spark_normal_builder_preserves_long_file_recovery(self, transcribe):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "speaker.wav"
+            audio.write_bytes(b"audio")
+            audio.with_suffix(".txt").write_text("long transcript " * 100)
+            kwargs = build_generate_kwargs(text="Hello", spec=get_model_spec("spark"), voice=str(audio),
+                                           speed=None, lang_code=None, max_tokens=None, verbose=False)
+            _populate_missing_ref_text(model_key="spark", kwargs=kwargs, logger=logging.getLogger("test"), verbose=False)
+            self.assertEqual(kwargs["ref_text"], "aligned transcript")
+            transcribe.assert_called_once()
+
     def test_model_path_override_rejects_non_mlx_repo_id(self):
         options = RuntimeOptions(
             model_key="kokoro",
@@ -239,12 +263,23 @@ class RuntimeDefaultTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp_dir:
             store = ModelStore(root_dir=Path(tmp_dir))
-            model_reference, _spec = _resolve_model_reference(
-                store, options, logging.getLogger("test")
-            )
+            with patch.object(store, "ensure_model", return_value=Path(tmp_dir) / "managed") as ensure:
+                model_reference, _spec = _resolve_model_reference(store, options, logging.getLogger("test"))
+                self.assertEqual(ensure.call_args.kwargs["spec"].repo_candidates, (options.model_path_override,))
+                self.assertFalse(ensure.call_args.kwargs["offline"])
 
-        self.assertEqual(model_reference, "mlx-community/Kokoro-82M-bf16")
+        self.assertEqual(model_reference, str(Path(tmp_dir) / "managed"))
         self.assertIsNone(_spec)
+
+    def test_offline_repo_override_uses_managed_store_and_propagates_missing_assets(self):
+        options = RuntimeOptions("kokoro", "mlx-community/Kokoro-82M-bf16", None, None, None, None, False, True)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ModelStore(Path(temporary))
+            with patch.object(store, "ensure_model", side_effect=RuntimeError("no complete local primary snapshot")) as ensure:
+                with self.assertRaisesRegex(RuntimeError, "no complete local"):
+                    _resolve_model_reference(store, options, logging.getLogger("test"))
+                self.assertTrue(ensure.call_args.kwargs["offline"])
+                self.assertEqual(ensure.call_args.kwargs["spec"].repo_candidates, (options.model_path_override,))
 
     def test_local_model_path_override_requires_config(self):
         options = RuntimeOptions(

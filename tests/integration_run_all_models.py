@@ -3,7 +3,7 @@
 
 This script is intentionally opt-in because it downloads and runs large models.
 Usage:
-  conda run -n tts python tests/integration_run_all_models.py --run
+  .venv/bin/python tests/integration_run_all_models.py --run
 """
 
 from __future__ import annotations
@@ -13,7 +13,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from libro_tts.catalog import list_model_keys
+from libro_tts.env import validate_project_virtualenv
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +42,7 @@ def main() -> int:
         print("Skipped. Re-run with --run to execute heavy integration tests.")
         return 0
 
+    validate_project_virtualenv()
     root = Path(__file__).resolve().parent.parent
     fixtures = [
         root / "input.txt",
@@ -51,8 +57,8 @@ def main() -> int:
         for fixture in fixtures:
             out_prefix = output_dir / f"{model_key}_{fixture.stem}"
             cmd = [
-                sys.executable,
-                str(root / "Libro-tts.py"),
+                "bash",
+                str(root / "run.sh"),
                 str(fixture),
                 "--model",
                 model_key,

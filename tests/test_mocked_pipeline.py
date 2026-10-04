@@ -10,9 +10,20 @@ from libro_tts.paths import project_root
 import libro_tts.runtime as runtime
 from libro_tts.runtime import RuntimeOptions, process_batch_dir, process_single_file
 from libro_tts.store import ModelStore
+from libro_tts.assets import CSM_TOKENIZER, CSM_CODEC, DIA_CODEC, CHATTERBOX_TOKENIZER
+from tests.test_auxiliary_assets import cached_asset
 
 
 class MockedPipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.reference_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        voices = self.reference_root / "reference_voices"
+        voices.mkdir()
+        for name in ("Britney", "Emma"):
+            (voices / f"{name}.wav").write_bytes(b"synthetic reference; synthesis is mocked")
+            (voices / f"{name}.txt").write_text("Synthetic reference transcript for tests.")
+        self.enterContext(patch("libro_tts.runtime.project_root", return_value=self.reference_root))
+
     def test_processes_input_and_public_plaintext_sources(self):
         root = project_root()
         inputs = [
@@ -68,6 +79,7 @@ class MockedPipelineTests(unittest.TestCase):
                 offline=True,
                 audio_format="wav",
                 parallel_workers=1,
+                stream_wav=False,
             )
 
             runtime._LOADED_MODEL_CACHE.clear()
@@ -200,6 +212,7 @@ class MockedPipelineTests(unittest.TestCase):
                 offline=True,
                 audio_format="wav",
                 parallel_workers=1,
+                stream_wav=False,
             )
 
             runtime._LOADED_MODEL_CACHE.clear()
@@ -215,7 +228,9 @@ class MockedPipelineTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(written_paths), 1)
-            self.assertEqual(written_paths[0].name, "chapter.wav")
+            self.assertTrue((tmp / "chapter.wav").is_file())
+            self.assertEqual(written_paths[0].suffix, ".wav")
+            self.assertFalse(written_paths[0].exists())
 
     def test_batch_discovers_case_insensitive_txt_and_reports_failures(self):
         class FakeResult:
@@ -272,6 +287,7 @@ class MockedPipelineTests(unittest.TestCase):
                 offline=True,
                 audio_format="wav",
                 parallel_workers=1,
+                stream_wav=False,
             )
 
             runtime._LOADED_MODEL_CACHE.clear()
@@ -357,7 +373,7 @@ class MockedPipelineTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.files_processed, 2)
-            names = sorted(path.name for path in written_paths)
+            names = sorted(path.name for path in (tmp / "outs").iterdir())
             self.assertEqual(names, ["foo.wav", "txt.wav"])
 
     def test_all_models_process_single_file_with_expected_kwargs(self):
@@ -395,10 +411,12 @@ class MockedPipelineTests(unittest.TestCase):
             input_file.write_text("hello from emma prompt test", encoding="utf-8")
 
             model_store = ModelStore(root_dir=tmp / "models")
-            ref_audio_path = (project_root() / "reference_voices" / "Emma.wav").resolve()
-            ref_text_value = (project_root() / "reference_voices" / "Emma.txt").read_text(
+            ref_audio_path = (self.reference_root / "reference_voices" / "Emma.wav").resolve()
+            ref_text_value = (self.reference_root / "reference_voices" / "Emma.txt").read_text(
                 encoding="utf-8"
             ).strip()
+            for asset_spec in (CSM_TOKENIZER, CSM_CODEC, DIA_CODEC, CHATTERBOX_TOKENIZER):
+                cached_asset(model_store.root_dir, asset_spec)
 
             runtime._LOADED_MODEL_CACHE.clear()
             with patch("libro_tts.runtime._get_load_model_fn", return_value=fake_load_model), patch(
@@ -414,6 +432,9 @@ class MockedPipelineTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     (model_dir / "weights.safetensors").write_text("weights", encoding="utf-8")
+                    if model_key == "voxtral_tts":
+                        (model_dir / "voice_embedding").mkdir()
+                        (model_dir / "voice_embedding/casual_male.safetensors").write_text("voice")
                     model_by_reference[str(model_dir.resolve())] = model_key
 
                     options = RuntimeOptions(
@@ -489,6 +510,8 @@ class MockedPipelineTests(unittest.TestCase):
             (model_dir / "config.json").write_text('{"model_type":"voxtral_tts"}', encoding="utf-8")
             (model_dir / "model.safetensors").write_text("weights", encoding="utf-8")
             (model_dir / "tekken.json").write_text("{}", encoding="utf-8")
+            (model_dir / "voice_embedding").mkdir()
+            (model_dir / "voice_embedding/neutral_male.safetensors").write_text("voice")
 
             model_store = ModelStore(root_dir=tmp / "models")
             options = RuntimeOptions(

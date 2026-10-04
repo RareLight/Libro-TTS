@@ -1,252 +1,310 @@
 #!/usr/bin/env python3
+"""Opt-in production-path timing and sampled RSS, with a model-free fixture mode."""
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import multiprocessing as mp
+import os
 from pathlib import Path
+import resource
+import signal
+import subprocess
 import sys
+import tempfile
 import time
+from types import SimpleNamespace
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from libro_tts.logging_config import configure_logging
-from libro_tts.env import validate_mlx_backend_preflight
-from libro_tts.env import validate_tts_model_runtime_support
-from libro_tts.runtime import (
-    RuntimeOptions,
-    _chunk_text_for_generation,
-    _collect_generation_audio,
-    _load_runtime_model,
-    _populate_missing_ref_text,
-    _read_input_text,
-    _resolve_model_reference,
-    _validate_model_generate_kwargs,
-    build_generate_kwargs,
+from libro_tts.bootstrap import configure_local_cache_environment
+from libro_tts.catalog import resolve_model_key
+from libro_tts.env import (
+    validate_project_virtualenv, validate_runtime_environment,
+    validate_mlx_backend_preflight, validate_tts_model_runtime_support,
 )
-from libro_tts.store import ModelStore
+from libro_tts.logging_config import configure_logging
+from libro_tts.validation import positive_int, validate_input_path
 
-_WORKER_MODEL = None
-_WORKER_KWARGS: dict[str, Any] | None = None
-
-
-def _worker_init(model_reference: str, kwargs_template: dict[str, Any]) -> None:
-    global _WORKER_MODEL, _WORKER_KWARGS
-    _WORKER_MODEL = _load_runtime_model(model_reference, configure_logging(verbose=False))
-    _WORKER_KWARGS = kwargs_template
+_NETWORK_BLOCKED = False
 
 
-def _worker_noop(_index: int) -> int:
-    return 0
+def _block_network():
+    """Block internet sockets while leaving local multiprocessing IPC usable."""
+    global _NETWORK_BLOCKED
+    if _NETWORK_BLOCKED:
+        return
+    import socket
+    connect = socket.socket.connect
+    connect_ex = socket.socket.connect_ex
+    def guarded(original):
+        def call(sock, address):
+            if sock.family in (socket.AF_INET, socket.AF_INET6):
+                raise RuntimeError('Benchmark offline check blocked an internet socket.')
+            return original(sock, address)
+        return call
+    socket.socket.connect = guarded(connect)
+    socket.socket.connect_ex = guarded(connect_ex)
+    _NETWORK_BLOCKED = True
 
 
-def _worker_generate(item: tuple[int, str]) -> tuple[int, float, int, int]:
-    if _WORKER_MODEL is None or _WORKER_KWARGS is None:
-        raise RuntimeError("Worker model was not initialized.")
+def _offline_worker(task):
+    _block_network()
+    from libro_tts.runtime import _parallel_worker_generate
+    return _parallel_worker_generate(task)
 
-    index, text_chunk = item
-    kwargs = dict(_WORKER_KWARGS)
-    kwargs["text"] = text_chunk
-    started = time.perf_counter()
-    results = _WORKER_MODEL.generate(**kwargs)
-    segments, sample_rate = _collect_generation_audio(
-        results=results,
-        fallback_sample_rate=getattr(_WORKER_MODEL, "sample_rate", None),
+
+def _prepare_chunks(config: dict[str, Any], logger):
+    from libro_tts.assets import prepare_model_assets
+    from libro_tts.runtime import (
+        RuntimeOptions, _read_input_text, _resolve_model_reference, build_generate_kwargs,
+        _populate_missing_ref_text, _validate_model_generate_kwargs,
+        _chunk_text_for_generation, _resolve_local_kokoro_voice, _validate_voxtral_voice,
     )
-    elapsed = time.perf_counter() - started
-    samples = sum(int(segment.size) for segment in segments)
-    return index, elapsed, samples, sample_rate
+    from libro_tts.store import ModelStore
+    from libro_tts.text import sanitize_text_for_tts
+
+    options = RuntimeOptions(config['model'], None, config['voice'], None, None, None, False, config['offline'])
+    store = ModelStore(Path(config['models_dir']))
+    text = _read_input_text(input_file=Path(config['input_file']), options=options, logger=logger)
+    text = sanitize_text_for_tts(text.removeprefix('\ufeff'))
+    if not text.strip():
+        raise ValueError('Input contains no text for synthesis.')
+    reference, spec = _resolve_model_reference(model_store=store, options=options, logger=logger)
+    key = spec.key if spec else options.model_key
+    kwargs = build_generate_kwargs(text=text, spec=spec, model_key=key, voice=options.voice, speed=None,
+                                   lang_code=None, max_tokens=None, verbose=False)
+    if not kwargs['text'].strip():
+        raise ValueError('Input contains no text for synthesis.')
+    prepare_model_assets(store, key, reference, options.offline)
+    if key == 'kokoro':
+        kwargs['voice'] = _resolve_local_kokoro_voice(reference, kwargs['voice'], options.offline, store)
+    if key == 'voxtral_tts':
+        _validate_voxtral_voice(reference, kwargs['voice'])
+    _populate_missing_ref_text(model_key=key, kwargs=kwargs, logger=logger, verbose=False,
+                               model_store=store, offline=options.offline)
+    _validate_model_generate_kwargs(model_key=key, kwargs=kwargs)
+    chunks = _chunk_text_for_generation(kwargs.pop('text'), kwargs.get('speed'))[:config['max_chunks']]
+    if len(chunks) < 2:
+        raise RuntimeError(f'Need at least two synthesis chunks; got {len(chunks)}.')
+    return reference, key, kwargs, chunks
 
 
-def _prepare_chunks(
-    *,
-    input_file: Path,
-    model_store: ModelStore,
-    options: RuntimeOptions,
-    logger,
-    max_chunks: int | None,
-) -> tuple[str, str, dict[str, Any], list[str]]:
-    text = _read_input_text(input_file=input_file, options=options, logger=logger)
-    model_reference, spec = _resolve_model_reference(model_store=model_store, options=options, logger=logger)
-    resolved_model_key = spec.key if spec is not None else options.model_key
+class FixtureModel:
+    sample_rate = 24000
 
-    kwargs = build_generate_kwargs(
-        text=text,
-        spec=spec,
-        model_key=options.model_key,
-        voice=options.voice,
-        speed=options.speed,
-        lang_code=options.lang_code,
-        max_tokens=options.max_tokens,
-        verbose=False,
-    )
-    _populate_missing_ref_text(
-        model_key=resolved_model_key,
-        kwargs=kwargs,
-        logger=logger,
-        verbose=False,
-    )
-    _validate_model_generate_kwargs(model_key=resolved_model_key, kwargs=kwargs)
+    def __init__(self, frames: int):
+        self.frames = frames
 
-    text_chunks = _chunk_text_for_generation(kwargs.pop("text", ""), kwargs.get("speed"))
-    if max_chunks is not None and max_chunks > 0:
-        text_chunks = text_chunks[:max_chunks]
-    if len(text_chunks) < 2:
-        raise RuntimeError(
-            f"Need at least 2 synthesis chunks for benchmark; got {len(text_chunks)}. "
-            "Use a longer input file or lower max chunk duration constraints."
-        )
-    return model_reference, resolved_model_key, kwargs, text_chunks
+    def generate(self, **_kwargs):
+        import numpy as np
+        yield SimpleNamespace(audio=np.full(self.frames, 0.125, dtype=np.float32), sample_rate=self.sample_rate)
 
 
-def _run_serial(model_reference: str, kwargs_template: dict[str, Any], chunks: list[str], logger) -> dict[str, Any]:
-    model = _load_runtime_model(model_reference, logger)
-    chunk_times: list[float] = []
-    total_samples = 0
-    sample_rate = None
-
-    started = time.perf_counter()
-    for chunk in chunks:
-        kwargs = dict(kwargs_template)
-        kwargs["text"] = chunk
-        chunk_start = time.perf_counter()
-        results = model.generate(**kwargs)
-        segments, sr = _collect_generation_audio(
-            results=results,
-            fallback_sample_rate=getattr(model, "sample_rate", None),
-        )
-        chunk_times.append(time.perf_counter() - chunk_start)
-        total_samples += sum(int(segment.size) for segment in segments)
-        sample_rate = sr if sample_rate is None else sample_rate
-    elapsed = time.perf_counter() - started
-
-    return {
-        "mode": "serial",
-        "wall_seconds": elapsed,
-        "chunks": len(chunks),
-        "chunks_per_second": len(chunks) / elapsed,
-        "avg_chunk_seconds": sum(chunk_times) / len(chunk_times),
-        "total_samples": total_samples,
-        "sample_rate": sample_rate,
-    }
+def _fixture_worker(task):
+    from libro_tts.runtime import _generate_chunk_audio
+    index, text, _reference, kwargs, suppress, _cache = task
+    audio, rate = _generate_chunk_audio(model=FixtureModel(kwargs['fixture_frames']),
+        kwargs_template={}, text_chunk=text, suppress_model_output=suppress)
+    return index, audio, rate
 
 
-def _run_parallel(
-    model_reference: str,
-    kwargs_template: dict[str, Any],
-    chunks: list[str],
-    workers: int,
-) -> dict[str, Any]:
-    indexed_chunks = list(enumerate(chunks))
-
-    with mp.Pool(
-        processes=workers,
-        initializer=_worker_init,
-        initargs=(model_reference, kwargs_template),
-    ) as pool:
-        pool.map(_worker_noop, range(workers))
-        started = time.perf_counter()
-        results = pool.map(_worker_generate, indexed_chunks)
-        elapsed = time.perf_counter() - started
-
-    results.sort(key=lambda item: item[0])
-    chunk_times = [item[1] for item in results]
-    total_samples = sum(item[2] for item in results)
-    sample_rates = {item[3] for item in results}
-    if len(sample_rates) != 1:
-        raise RuntimeError(f"Inconsistent sample rates from parallel workers: {sample_rates}")
-
-    return {
-        "mode": f"parallel_{workers}",
-        "wall_seconds": elapsed,
-        "chunks": len(chunks),
-        "chunks_per_second": len(chunks) / elapsed,
-        "avg_chunk_seconds": sum(chunk_times) / len(chunk_times),
-        "total_samples": total_samples,
-        "sample_rate": sample_rates.pop(),
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Benchmark serial vs parallel chunk generation for Libro-TTS."
-    )
-    parser.add_argument("--input-file", type=Path, required=True, help="Path to long .txt input.")
-    parser.add_argument("--model", type=str, default="spark", help="Model key to benchmark.")
-    parser.add_argument("--voice", type=str, default="Emma", help="Voice/prompt name.")
-    parser.add_argument("--workers", type=int, default=2, help="Parallel worker count.")
-    parser.add_argument("--max-chunks", type=int, default=8, help="Limit benchmark chunk count.")
-    parser.add_argument("--offline", action="store_true", help="Disable downloads for model resolution.")
-    parser.add_argument(
-        "--skip-preflight",
-        action="store_true",
-        help="Skip MLX backend preflight (advanced troubleshooting only).",
-    )
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional JSON output path.")
-    args = parser.parse_args()
-
+def _benchmark_child(config, connection):
+    os.setsid()
     logger = configure_logging(verbose=False)
+    configure_local_cache_environment(Path(config['models_dir']) / '.hf', offline=config['offline'])
+    if config['offline']:
+        _block_network()
+    reports = []
+    for repeat in range(config['repeats']):
+        started = time.perf_counter()
+        try:
+            import numpy as np
+            import libro_tts.runtime as runtime
+            from libro_tts.assets import local_asset_loading
+            if config['fixture']:
+                reference, key = 'synthetic-fixture', 'fixture'
+                kwargs = {'fixture_frames': config['fixture_frames']}
+                chunks = [f'Fixture chunk {index}.' for index in range(config['max_chunks'])]
+                runtime._parallel_worker_generate = _fixture_worker
+            else:
+                reference, key, kwargs, chunks = _prepare_chunks(config, logger)
+                if config['offline']:
+                    runtime._parallel_worker_generate = _offline_worker
+                if config['workers'] > 1 and not runtime._model_supports_parallel_chunk_generation(key):
+                    raise RuntimeError(f'{key} has a production parallel reliability guard; use another model.')
+            prepared = time.perf_counter()
+            sink = runtime.StreamingWavOutput(Path(config['output'])) if not config['buffered_wav'] else None
+            with local_asset_loading(Path(config['models_dir']) / '.hf'), (sink if sink is not None else nullcontext()):
+                if config['workers'] == 1:
+                    model = FixtureModel(config['fixture_frames']) if config['fixture'] else runtime._load_runtime_model(reference, logger)
+                loaded = time.perf_counter()
+                if config['workers'] == 1:
+                    audio_chunks, rate = runtime._generate_audio_serial(model=model, kwargs_template=kwargs,
+                        text_chunks=chunks, suppress_model_output=True, audio_sink=sink)
+                else:
+                    audio_chunks, rate = runtime._generate_audio_parallel(model_reference=reference,
+                        kwargs_template=kwargs, text_chunks=chunks, workers=config['workers'],
+                        batch_size=config['batch_size'], suppress_model_output=True, audio_sink=sink)
+                generated = time.perf_counter()
+                if sink is not None:
+                    frames, channels = sink.frames, sink.channels
+                    pcm_bytes, combined_bytes = sink.source_pcm_bytes, 0
+                    concatenated = time.perf_counter()
+                    output = sink.publish()
+                else:
+                    audio = audio_chunks[0] if len(audio_chunks) == 1 else np.concatenate(audio_chunks, axis=0)
+                    frames = sum(chunk.shape[0] for chunk in audio_chunks)
+                    channels = 1 if audio.ndim == 1 else audio.shape[1]
+                    pcm_bytes, combined_bytes = sum(chunk.nbytes for chunk in audio_chunks), audio.nbytes
+                    concatenated = time.perf_counter()
+                    output = runtime._write_output_audio(output_target=config['output'], audio_format='wav', audio=audio, sample_rate=rate)
+                    del audio
+            finished = time.perf_counter()
+            duration = frames / rate
+            reports.append({
+                'repeat': repeat + 1, 'cache_state': 'first' if repeat == 0 else 'repeat', 'success': True,
+                'chunks': len(chunks), 'frames': frames, 'channels': channels,
+                'sample_rate': rate, 'audio_seconds': duration,
+                'wall_seconds': finished - started, 'rtf': (finished - started) / duration,
+                'prepare_seconds': prepared - started, 'parent_load_seconds': loaded - prepared,
+                'generation_seconds': generated - loaded, 'concatenate_seconds': concatenated - generated,
+                'encode_seconds': finished - concatenated,
+                'chunk_pcm_bytes': pcm_bytes,
+                'combined_pcm_bytes': combined_bytes, 'encoded_bytes': output.stat().st_size,
+                'parent_peak_rss_bytes': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin' else 1024),
+            })
+            # Keep warm model state, but release PCM before the next measurement.
+            del audio_chunks
+        except Exception as exc:
+            reports.append({'repeat': repeat + 1, 'success': False, 'wall_seconds': time.perf_counter() - started,
+                            'error': f'{type(exc).__name__}: {exc}'[-4096:]})
+            break
+    connection.send(reports)
+    connection.close()
+
+
+def _sample_descendant_rss(pid: int) -> int:
+    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,rss='], capture_output=True, text=True, check=True)
+    rows = [tuple(map(int, line.split())) for line in result.stdout.splitlines() if len(line.split()) == 3]
+    descendants = {pid}
+    while True:
+        expanded = descendants | {child for child, parent, _rss in rows if parent in descendants}
+        if expanded == descendants:
+            break
+        descendants = expanded
+    return sum(rss * 1024 for child, _parent, rss in rows if child in descendants)
+
+
+def _run_mode(config):
+    context = mp.get_context('spawn')
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_benchmark_child, args=(config, sender))
+    started = time.perf_counter()
+    process.start()
+    sender.close()
+    peak = 0
+    samples = 0
+    reports = None
     try:
-        validate_mlx_backend_preflight(
-            expected_conda_env="tts",
-            skip_preflight=args.skip_preflight,
-        )
-        validate_tts_model_runtime_support(
-            args.model,
-            expected_conda_env="tts",
-        )
+        while process.is_alive():
+            try:
+                peak = max(peak, _sample_descendant_rss(process.pid))
+                samples += 1
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if receiver.poll(0.2):
+                reports = receiver.recv()
+                break
+            if time.perf_counter() - started > config['timeout']:
+                _stop_process_group(process)
+                break
+        process.join(timeout=5)
+        if process.is_alive():
+            _stop_process_group(process, signal.SIGKILL)
+            process.join()
+        if reports is None and receiver.poll():
+            reports = receiver.recv()
+    except EOFError:
+        reports = None
+    finally:
+        if process.is_alive():
+            _stop_process_group(process)
+        process.join(timeout=5)
+        receiver.close()
+    return {'workers': config['workers'], 'runs': reports or [{'success': False, 'error': f'Child exited {process.exitcode} or timed out.'}],
+            'sampled_peak_tree_rss_bytes': peak or None, 'rss_samples': samples,
+            'process_wall_seconds': time.perf_counter() - started}
+
+
+def _stop_process_group(process, signum=signal.SIGTERM):
+    try:
+        if os.getpgid(process.pid) == process.pid:
+            os.killpg(process.pid, signum)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        pass
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--input-file', type=Path, help='Long UTF-8 text; required without --fixture.')
+    parser.add_argument('--model', type=resolve_model_key, default='spark')
+    parser.add_argument('--voice', default=None, help='Omit to use the catalog default.')
+    parser.add_argument('--workers', type=positive_int, default=2)
+    parser.add_argument('--parallel-batch-size', type=positive_int, default=12)
+    parser.add_argument('--max-chunks', type=positive_int, default=8)
+    parser.add_argument('--repeats', type=positive_int, default=2)
+    parser.add_argument('--timeout', type=positive_int, default=600, help='Maximum seconds per execution mode.')
+    parser.add_argument('--offline', action='store_true')
+    parser.add_argument('--skip-preflight', action='store_true', help='Advanced backend troubleshooting only.')
+    parser.add_argument('--models-dir', type=Path, default=PROJECT_ROOT / 'models')
+    parser.add_argument('--fixture', action='store_true', help='Use deterministic PCM fixtures; no model/Metal/network.')
+    parser.add_argument('--fixture-frames', type=positive_int, default=240000)
+    parser.add_argument('--buffered-wav', action='store_true', help='Compare the retained legacy WAV encoder path.')
+    parser.add_argument('--json-out', type=Path)
+    args = parser.parse_args(argv)
+    configure_local_cache_environment(args.models_dir / '.hf', offline=args.offline)
+    preflight_started = time.perf_counter()
+    try:
+        validate_project_virtualenv()
+        if not args.fixture:
+            validate_runtime_environment()
+            if args.input_file is None:
+                raise ValueError('--input-file is required without --fixture.')
+            validate_input_path(args.input_file)
+            probe = validate_mlx_backend_preflight(skip_preflight=args.skip_preflight)
+            validate_tts_model_runtime_support(args.model, probe=probe)
+        if args.max_chunks < 2:
+            raise ValueError('--max-chunks must be at least 2.')
     except Exception as exc:
-        print(f"Preflight failed: {exc}")
+        print(f'Preflight failed: {exc}')
         return 1
-
-    model_store = ModelStore()
-    options = RuntimeOptions(
-        model_key=args.model,
-        model_path_override=None,
-        voice=args.voice,
-        speed=None,
-        lang_code=None,
-        max_tokens=None,
-        verbose=False,
-        offline=args.offline,
-        audio_format="wav",
-    )
-
-    model_reference, resolved_model_key, kwargs_template, chunks = _prepare_chunks(
-        input_file=args.input_file,
-        model_store=model_store,
-        options=options,
-        logger=logger,
-        max_chunks=args.max_chunks,
-    )
-
-    serial = _run_serial(model_reference, kwargs_template, chunks, logger)
-    parallel = _run_parallel(model_reference, kwargs_template, chunks, workers=args.workers)
-    speedup = serial["wall_seconds"] / parallel["wall_seconds"]
-
-    summary = {
-        "model_key": resolved_model_key,
-        "model_reference": model_reference,
-        "chunks_benchmarked": len(chunks),
-        "serial": serial,
-        "parallel": parallel,
-        "speedup": speedup,
-        "delta_chunks_per_second": parallel["chunks_per_second"] - serial["chunks_per_second"],
-    }
-
-    print("Chunk Parallelization Benchmark")
+    preflight_seconds = time.perf_counter() - preflight_started
+    with tempfile.TemporaryDirectory(prefix='libro-benchmark-') as temporary:
+        config = {'input_file': str(args.input_file) if args.input_file else None,
+                  'model': args.model, 'voice': args.voice, 'offline': args.offline,
+                  'models_dir': str(args.models_dir.resolve()), 'fixture': args.fixture,
+                  'fixture_frames': args.fixture_frames, 'buffered_wav': args.buffered_wav, 'max_chunks': args.max_chunks,
+                  'repeats': args.repeats, 'batch_size': args.parallel_batch_size, 'timeout': args.timeout}
+        modes = []
+        for workers in (1, args.workers):
+            modes.append(_run_mode({**config, 'workers': workers, 'output': str(Path(temporary) / f'{workers}.wav')}))
+    summary = {'fixture': args.fixture, 'buffered_wav': args.buffered_wav, 'model_key': args.model if not args.fixture else 'fixture',
+               'preflight_seconds': preflight_seconds, 'parallel_batch_size': args.parallel_batch_size,
+               'modes': modes,
+               'measurement_notes': 'Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding (incremental writes are part of generation time); controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.'}
     print(json.dumps(summary, indent=2, sort_keys=True))
-
-    if args.json_out is not None:
+    if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-        print(f"Wrote benchmark JSON: {args.json_out}")
-
-    return 0
+        args.json_out.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+    return 0 if all(run['success'] for mode in modes for run in mode['runs']) else 1
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

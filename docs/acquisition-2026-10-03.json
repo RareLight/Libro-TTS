@@ -1,0 +1,103 @@
+{
+  "date": "2026-10-03",
+  "listening_acceptance": {
+    "date": "2026-10-04",
+    "default_changed": false,
+    "preference": "Kokoro sounds slightly more natural and remains the preferred default",
+    "result": "Both work as expected",
+    "scope": "Supplied default parallel Kokoro and Soprano samples",
+    "source": "User report"
+  },
+  "listening_samples": "tests_output/qc-acceptance-20261003-ymsgbfwn",
+  "method": "Empty disposable primary/cache roots; online managed acquisition; fresh-process offline serial/parallel generation with internet sockets blocked; no new quantization or conversion.",
+  "reports": {
+    "kokoro": {
+      "offline": {
+        "acquisition_seconds": 0.008952417003456503,
+        "file_inventory_count": 122,
+        "hf_cache_local": true,
+        "inventory_bytes": 389411255,
+        "manifest_relative_path": "kokoro/mlx-community__Kokoro-82M-bf16",
+        "manifest_selection_unchanged": true,
+        "offline": true,
+        "outputs": [
+          {
+            "channels": 1,
+            "frames": 901800,
+            "sample_rate": 24000,
+            "sample_width": 2,
+            "workers": 1
+          },
+          {
+            "channels": 1,
+            "frames": 901800,
+            "sample_rate": 24000,
+            "sample_width": 2,
+            "workers": 2
+          }
+        ],
+        "prepared_chunks": 4,
+        "quantized": false,
+        "repo_id": "mlx-community/Kokoro-82M-bf16",
+        "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c"
+      },
+      "online": {
+        "acquisition_seconds": 10.397730415992555,
+        "file_inventory_count": 122,
+        "hf_cache_local": true,
+        "inventory_bytes": 389411255,
+        "manifest_relative_path": "kokoro/mlx-community__Kokoro-82M-bf16",
+        "offline": false,
+        "quantized": false,
+        "repo_id": "mlx-community/Kokoro-82M-bf16",
+        "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c"
+      }
+    },
+    "soprano": {
+      "offline": {
+        "acquisition_seconds": 0.0035015830071642995,
+        "file_inventory_count": 9,
+        "hf_cache_local": true,
+        "inventory_bytes": 283883377,
+        "manifest_relative_path": "soprano/mlx-community__Soprano-1.1-80M-bf16",
+        "manifest_selection_unchanged": true,
+        "offline": true,
+        "outputs": [
+          {
+            "channels": 1,
+            "frames": 1075200,
+            "sample_rate": 32000,
+            "sample_width": 2,
+            "workers": 1
+          },
+          {
+            "channels": 1,
+            "frames": 1048576,
+            "sample_rate": 32000,
+            "sample_width": 2,
+            "workers": 2
+          }
+        ],
+        "prepared_chunks": 5,
+        "quantized": false,
+        "repo_id": "mlx-community/Soprano-1.1-80M-bf16",
+        "revision": "745350c27f356c3910eebcb49e29760dcf6a643c"
+      },
+      "online": {
+        "acquisition_seconds": 6.3765059580036905,
+        "file_inventory_count": 9,
+        "hf_cache_local": true,
+        "inventory_bytes": 283883377,
+        "manifest_relative_path": "soprano/mlx-community__Soprano-1.1-80M-bf16",
+        "offline": false,
+        "quantized": false,
+        "repo_id": "mlx-community/Soprano-1.1-80M-bf16",
+        "revision": "745350c27f356c3910eebcb49e29760dcf6a643c"
+      }
+    }
+  },
+  "scope": [
+    "kokoro",
+    "soprano"
+  ]
+}

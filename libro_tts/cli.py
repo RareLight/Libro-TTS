@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -18,16 +19,17 @@ from .env import (
     validate_tts_model_runtime_support,
     validate_mlx_backend_preflight,
     validate_runtime_environment,
+    validate_local_encoder,
 )
 from .logging_config import configure_logging
 from .paths import prepare_runtime_dirs
-from .runtime import (
-    RuntimeOptions,
-    default_output_target_for_input,
-    process_batch_dir,
-    process_single_file,
+from .text import sanitize_text_for_tts
+from .validation import (
+    ENCODED_AUDIO_FORMATS, validate_audio_format, validate_speed,
+    canonical_path_key,
+    positive_int,
+    validate_input_path, validate_output_destination, resolve_output_path,
 )
-from .store import ModelStore
 
 
 def _build_generate_parser() -> argparse.ArgumentParser:
@@ -35,8 +37,9 @@ def _build_generate_parser() -> argparse.ArgumentParser:
         prog="python Libro-tts.py",
         description="Generate audiobook-style TTS audio on Apple Silicon using mlx-audio.",
     )
-    parser.add_argument("input", nargs="?", help="Path to a single input text file")
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument("input", nargs="?", help="Path to a single input text file")
+    input_group.add_argument(
         "--input-dir",
         "-d",
         type=str,
@@ -74,15 +77,20 @@ def _build_generate_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--audio-format",
-        type=str,
+        type=validate_audio_format,
         default="wav",
-        help="Output audio format. WAV is recommended.",
+        help="Output format: wav, mp3, flac, ogg, opus, vorbis, pcm, raw. WAV is recommended.",
     )
     parser.add_argument(
         "--offline",
         action="store_true",
         help="Disallow network downloads; require all models to be present locally.",
     )
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument("--serial", action="store_true", help="Generate all chunks in the main process.")
+    execution.add_argument("--workers", type=positive_int, help="Parallel workers (default: 2; 1 selects serial).")
+    parser.add_argument("--parallel-batch-size", type=positive_int, default=12,
+                        help="Maximum chunks dispatched per pool batch (default: 12).")
     parser.add_argument(
         "--list-models",
         action="store_true",
@@ -108,6 +116,7 @@ def _print_model_list() -> None:
         print()
         print(f"- {spec.key}: {spec.display_name}")
         print(f"  mlx_model_type: {canonical_model_type_for_key(spec.key)}")
+        print(f"  voice_mode: {spec.voice_mode}; speed: {spec.speed_behavior}; parallel_safe: {spec.parallel_safe}")
         print("  defaults:")
         print(f"    voice: {spec.default_voice if spec.default_voice is not None else 'none'}")
         print(f"    speed: {spec.default_speed if spec.default_speed is not None else 'none'}")
@@ -130,6 +139,15 @@ def _print_diag() -> int:
     print(f"python_version: {report.python_version}")
     print(f"conda_env: {report.conda_env}")
     print(f"expected_conda_env: {report.expected_conda_env or 'any'}")
+    print(f"python_prefix: {report.python_prefix}")
+    print(f"project_virtualenv: {report.project_virtualenv}")
+    print(f"is_project_virtualenv: {report.is_project_virtualenv}")
+    print(f"platform: {report.platform_system}/{report.platform_machine}")
+    print(f"ffmpeg_executable: {report.ffmpeg_executable or 'missing'}")
+    print(f"is_local_ffmpeg: {report.is_local_ffmpeg}")
+    print("cache_roots:")
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HF_ASSETS_CACHE"):
+        print(f"  - {name}: {os.environ.get(name)}")
     print("package_versions:")
     for package, version in report.package_versions.items():
         print(f"  - {package}: {version}")
@@ -156,7 +174,12 @@ def _print_diag() -> int:
         print("tts_model_support:")
         for model_key, status in sorted(report.tts_model_support.items()):
             print(f"  - {model_key}: {status}")
-    return 0
+    return int(
+        not report.is_project_virtualenv
+        or not report.is_local_ffmpeg
+        or bool(report.tts_runtime_probe.probe_error)
+        or any(version is None for version in report.package_versions.values())
+    )
 
 
 def _run_generation(args: argparse.Namespace) -> int:
@@ -171,15 +194,30 @@ def _run_generation(args: argparse.Namespace) -> int:
     if args.diag:
         return _print_diag()
 
-    validate_runtime_environment()
-    validate_mlx_backend_preflight()
-    validate_tts_model_runtime_support(args.model)
+    if not args.input and not args.input_dir:
+        raise ValueError("Specify a single input file or --input-dir, or use --list-models/--list-kokoro-voices/--diag.")
+    validate_audio_format(args.audio_format)
+    validate_speed(args.model, args.speed)
+    source = Path(args.input_dir if args.input_dir else args.input)
+    validate_input_path(source, directory=bool(args.input_dir))
+    if args.input_dir:
+        validate_output_destination(Path(args.output) if args.output else source, directory=True)
+    elif args.output:
+        validate_output_destination(resolve_output_path(args.output, args.audio_format),
+                                    protected_inputs=frozenset({canonical_path_key(source)}))
 
-    dirs = prepare_runtime_dirs()
-    configure_local_cache_environment(dirs["hf_cache_dir"])
+    validate_runtime_environment()
+
+    from .runtime import (
+        RuntimeOptions,
+        default_output_target_for_input,
+        process_batch_dir,
+        process_single_file,
+        _read_input_text,
+    )
+    from .store import ModelStore
 
     logger = configure_logging(verbose=args.verbose)
-    model_store = ModelStore(root_dir=dirs["models_dir"])
 
     options = RuntimeOptions(
         model_key=args.model,
@@ -193,7 +231,25 @@ def _run_generation(args: argparse.Namespace) -> int:
         audio_format=args.audio_format,
         input_encoding="utf-8",
         input_encoding_fallbacks=(),
+        parallel_workers=1 if args.serial else (args.workers or 2),
+        parallel_max_chunks=args.parallel_batch_size,
     )
+
+    prepared_text = None
+    if args.input:
+        output_prefix = args.output or default_output_target_for_input(input_file=source, audio_format=args.audio_format)
+        validate_output_destination(resolve_output_path(output_prefix, args.audio_format),
+                                    protected_inputs=frozenset({canonical_path_key(source)}))
+        prepared_text = _read_input_text(input_file=source, options=options, logger=logger)
+        if not sanitize_text_for_tts(prepared_text).strip():
+            raise ValueError(f"Input contains no text for synthesis after preprocessing: {source}")
+
+    if args.audio_format.lower() in ENCODED_AUDIO_FORMATS:
+        validate_local_encoder()
+    probe = validate_mlx_backend_preflight()
+    validate_tts_model_runtime_support(args.model, probe=probe)
+    dirs = prepare_runtime_dirs()
+    model_store = ModelStore(root_dir=dirs["models_dir"])
 
     if args.input_dir:
         input_dir = Path(args.input_dir)
@@ -238,31 +294,17 @@ def _run_generation(args: argparse.Namespace) -> int:
             print(f"Batch complete. Files processed: {result.files_processed}")
         return 0
 
-    if args.input:
-        input_file = Path(args.input)
-        output_prefix = (
-            args.output
-            if args.output
-            else default_output_target_for_input(
-                input_file=input_file,
-                audio_format=args.audio_format,
-            )
-        )
-        process_single_file(
-            input_file=input_file,
-            output_prefix=output_prefix,
-            model_store=model_store,
-            options=options,
-            logger=logger,
-        )
-        if args.verbose:
-            logger.info("Audio generation complete")
-        return 0
-
-    raise SystemExit(
-        "You must specify either a single input file or --input-dir, "
-        "or use --list-models/--list-kokoro-voices/--diag."
+    process_single_file(
+        input_file=source,
+        output_prefix=output_prefix,
+        model_store=model_store,
+        options=options,
+        logger=logger,
+        prepared_text=prepared_text,
     )
+    if args.verbose:
+        logger.info("Audio generation complete")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -271,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         parser = _build_generate_parser()
         args = parser.parse_args(argv)
+        configure_local_cache_environment(offline=args.offline)
         return _run_generation(args)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

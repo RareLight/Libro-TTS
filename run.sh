@@ -14,11 +14,17 @@ done
 
 PROJECT_ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
-export LIBRO_TTS_EXPECTED_CONDA_ENV=tts
-
 if [ "$#" -eq 0 ]; then
   set -- --help
 fi
 
-exec /Users/anna/miniconda3/bin/conda run --no-capture-output -n tts \
-  python "$PROJECT_ROOT/Libro-tts.py" "$@"
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Libro-TTS's local environment is missing. Run: bash \"$PROJECT_ROOT/scripts/setup.sh\"" >&2
+  exit 1
+fi
+
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+export PATH="$PROJECT_ROOT/.venv/bin:$PATH"
+exec "$PYTHON" "$PROJECT_ROOT/Libro-tts.py" "$@"

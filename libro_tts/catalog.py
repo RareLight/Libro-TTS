@@ -67,6 +67,9 @@ MODEL_TYPE_CANONICAL: dict[str, str] = {
 MODEL_TYPE_ACCEPTED: dict[str, tuple[str, ...]] = {
     "csm": ("sesame", "csm"),
 }
+# Known backbone labels in the catalog's pinned TTS snapshots, not arbitrary
+# architectures to relabel. Unexpected metadata must fail without mutation.
+MODEL_CONFIG_TYPE_ADAPTERS = {"spark": ("qwen2",), "voxtral_tts": ("llama",), "csm": ("csm",)}
 MODEL_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "kokoro": ("kokoro",),
     "qwen3_tts": ("qwen3_tts", "qwen3-tts", "qwen3tts", "qwen3", "qwen"),
@@ -89,6 +92,13 @@ class ModelSpec:
     default_lang_code: str | None
     max_tokens: int = DEFAULT_MAX_TOKENS
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
+    # Primary-snapshot assets used by the pinned mlx-audio runtime. Separate
+    # HF repositories (codecs/STT) are not covered by these checks.
+    required_assets: tuple[str, ...] = ()
+    voice_mode: str = "named"
+    requires_ref_text: bool = False
+    parallel_safe: bool = True
+    speed_behavior: str = "chunking only"
 
 
 CATALOG: dict[str, ModelSpec] = {
@@ -99,6 +109,8 @@ CATALOG: dict[str, ModelSpec] = {
         default_voice=DEFAULT_VOICE,
         default_speed=DEFAULT_SPEED,
         default_lang_code="a",
+        required_assets=("voices/af_aoede.safetensors",),
+        speed_behavior="speech rate and chunking",
     ),
     "qwen3_tts": ModelSpec(
         key="qwen3_tts",
@@ -111,6 +123,10 @@ CATALOG: dict[str, ModelSpec] = {
         default_speed=1.0,
         default_lang_code="english",
         max_tokens=4096,
+        required_assets=(
+            "tokenizer_config.json", "vocab.json", "merges.txt",
+            "speech_tokenizer/config.json", "speech_tokenizer/*.safetensors",
+        ),
     ),
     "csm": ModelSpec(
         key="csm",
@@ -119,6 +135,7 @@ CATALOG: dict[str, ModelSpec] = {
         default_voice=DEFAULT_PROMPT_VOICE,
         default_speed=1.0,
         default_lang_code="en",
+        voice_mode="prompt", requires_ref_text=True, parallel_safe=False,
     ),
     "dia": ModelSpec(
         key="dia",
@@ -128,6 +145,7 @@ CATALOG: dict[str, ModelSpec] = {
         default_speed=1.0,
         default_lang_code="en",
         max_tokens=2000,
+        voice_mode="prompt", requires_ref_text=True, parallel_safe=False,
     ),
     "spark": ModelSpec(
         key="spark",
@@ -136,6 +154,15 @@ CATALOG: dict[str, ModelSpec] = {
         default_voice=DEFAULT_PROMPT_VOICE,
         default_speed=1.0,
         default_lang_code="en",
+        voice_mode="prompt", requires_ref_text=True,
+        speed_behavior="categorical for unprompted speech; chunking only when cloning",
+        required_assets=(
+            "tokenizer.json", "tokenizer_config.json", "audio_tokenizer_config.yaml",
+            "BiCodec/config.yaml", "BiCodec/*.safetensors",
+            "wav2vec2-large-xlsr-53/config.json",
+            "wav2vec2-large-xlsr-53/preprocessor_config.json",
+            "wav2vec2-large-xlsr-53/*.safetensors",
+        ),
     ),
     "chatterbox": ModelSpec(
         key="chatterbox",
@@ -144,6 +171,8 @@ CATALOG: dict[str, ModelSpec] = {
         default_voice=DEFAULT_PROMPT_VOICE,
         default_speed=1.0,
         default_lang_code="en",
+        required_assets=("tokenizer.json",),
+        voice_mode="prompt",
     ),
     "soprano": ModelSpec(
         key="soprano",
@@ -152,6 +181,8 @@ CATALOG: dict[str, ModelSpec] = {
         default_voice=None,
         default_speed=1.0,
         default_lang_code="en",
+        required_assets=("tokenizer.json", "tokenizer_config.json"),
+        voice_mode="ignored",
     ),
     "voxtral_tts": ModelSpec(
         key="voxtral_tts",
@@ -161,6 +192,7 @@ CATALOG: dict[str, ModelSpec] = {
         default_speed=None,
         default_lang_code=None,
         max_tokens=4096,
+        required_assets=("tekken.json", "voice_embedding/neutral_female.safetensors"),
     ),
 }
 

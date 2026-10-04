@@ -6,13 +6,19 @@ import importlib.metadata
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from .bootstrap import configure_local_cache_environment as configure_local_cache_environment
 from .catalog import canonical_model_type_for_key, list_model_keys
+from .paths import project_root
 
-REQUIRED_PACKAGES = ("mlx-audio", "huggingface_hub")
+REQUIRED_PACKAGES = (
+    "mlx-audio", "mlx", "huggingface_hub", "numpy", "spacy",
+    "en-core-web-sm", "mistral-common", "imageio-ffmpeg",
+)
 MAX_PREFLIGHT_LOG_LINES = 40
 
 
@@ -33,6 +39,13 @@ class EnvironmentReport:
     package_versions: dict[str, str | None]
     tts_runtime_probe: TTSRuntimeProbe
     tts_model_support: dict[str, str] = field(default_factory=dict)
+    python_prefix: str = ""
+    project_virtualenv: str = ""
+    is_project_virtualenv: bool = False
+    platform_system: str = ""
+    platform_machine: str = ""
+    ffmpeg_executable: str | None = None
+    is_local_ffmpeg: bool = False
 
 
 def _collect_package_versions(packages: tuple[str, ...]) -> dict[str, str | None]:
@@ -43,24 +56,6 @@ def _collect_package_versions(packages: tuple[str, ...]) -> dict[str, str | None
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
     return versions
-
-
-def configure_local_cache_environment(hf_cache_root: Path) -> None:
-    hf_home = hf_cache_root
-    hub_cache = hf_home / "hub"
-    transformers_cache = hf_home / "transformers"
-    datasets_cache = hf_home / "datasets"
-
-    hf_home.mkdir(parents=True, exist_ok=True)
-    hub_cache.mkdir(parents=True, exist_ok=True)
-    transformers_cache.mkdir(parents=True, exist_ok=True)
-    datasets_cache.mkdir(parents=True, exist_ok=True)
-
-    os.environ["HF_HOME"] = str(hf_home)
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
-    os.environ["TRANSFORMERS_CACHE"] = str(transformers_cache)
-    os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def _resolve_expected_conda_env(expected_conda_env: str | None = None) -> str | None:
@@ -75,7 +70,7 @@ def _resolve_expected_conda_env(expected_conda_env: str | None = None) -> str | 
 def _runtime_command(expected_conda_env: str | None) -> str:
     if expected_conda_env:
         return f"conda run -n {expected_conda_env} python Libro-tts.py <args>"
-    return "python Libro-tts.py <args>"
+    return "bash run.sh <args>"
 
 
 def _mlx_import_check_command(expected_conda_env: str | None) -> str:
@@ -84,7 +79,7 @@ def _mlx_import_check_command(expected_conda_env: str | None) -> str:
             f"conda run -n {expected_conda_env} python -c "
             "\"from mlx_audio.tts.utils import load_model; print('mlx-audio runtime import OK')\""
         )
-    return 'python -c "from mlx_audio.tts.utils import load_model; print(\'mlx-audio runtime import OK\')"'
+    return '.venv/bin/python -c "from mlx_audio.tts.utils import load_model; print(\'mlx-audio runtime import OK\')"'
 
 
 def _trim_process_output(text: str) -> str:
@@ -180,6 +175,8 @@ def probe_tts_runtime_support(timeout_seconds: int = 20) -> TTSRuntimeProbe:
             probe_error=f"Invalid TTS runtime probe output ({exc}). Output: {detail}",
         )
 
+    if not isinstance(payload, dict) or not isinstance(payload.get("available_model_types", []), list):
+        return TTSRuntimeProbe(mlx_audio_version=fallback_version, probe_error="Invalid TTS runtime probe payload schema.")
     available = payload.get("available_model_types", [])
     remapping = payload.get("model_remapping", {})
     return TTSRuntimeProbe(
@@ -220,9 +217,10 @@ def validate_tts_model_runtime_support(
     *,
     expected_conda_env: str | None = None,
     timeout_seconds: int = 20,
+    probe: TTSRuntimeProbe | None = None,
 ) -> TTSRuntimeProbe:
     resolved_expected_env = _resolve_expected_conda_env(expected_conda_env)
-    probe = probe_tts_runtime_support(timeout_seconds=timeout_seconds)
+    probe = probe if probe is not None else probe_tts_runtime_support(timeout_seconds=timeout_seconds)
     installed_version = probe.mlx_audio_version or "unknown"
     expected_model_type = canonical_model_type_for_key(model_key)
 
@@ -339,7 +337,46 @@ def doctor(
         package_versions=package_versions,
         tts_runtime_probe=tts_runtime_probe,
         tts_model_support=tts_model_support,
+        python_prefix=sys.prefix,
+        project_virtualenv=str(project_root() / ".venv"),
+        is_project_virtualenv=is_project_virtualenv(),
+        platform_system=platform.system(),
+        platform_machine=platform.machine(),
+        ffmpeg_executable=shutil.which("ffmpeg"),
+        is_local_ffmpeg=is_local_encoder(),
     )
+
+
+def is_project_virtualenv() -> bool:
+    return (
+        Path(sys.prefix).absolute() == (project_root() / ".venv").absolute()
+        and sys.prefix != sys.base_prefix
+    )
+
+
+def validate_project_virtualenv() -> None:
+    if not is_project_virtualenv():
+        raise RuntimeError(
+            "Libro-TTS generation requires this project's .venv. "
+            "Run bash scripts/setup.sh, then bash run.sh <args>.\n"
+            f"Expected environment: {project_root() / '.venv'}\n"
+            f"Current Python: {sys.executable} (prefix: {sys.prefix})"
+        )
+
+
+def is_local_encoder() -> bool:
+    selected = shutil.which("ffmpeg")
+    prefix = (project_root() / ".venv").resolve()
+    return selected is not None and Path(selected).resolve().is_relative_to(prefix)
+
+
+def validate_local_encoder() -> None:
+    if not is_local_encoder():
+        raise RuntimeError(
+            "MP3/FLAC generation requires the project-local FFmpeg binary. "
+            "Run bash scripts/setup.sh to install the locked encoder. "
+            f"Selected encoder: {shutil.which('ffmpeg') or 'missing'}"
+        )
 
 
 def _required_command_hint(expected_conda_env: str | None) -> str:
@@ -354,6 +391,8 @@ def validate_runtime_environment(
     expected_conda_env: str | None = None,
     skip_env_check: bool = False,
 ) -> EnvironmentReport:
+    if not skip_env_check:
+        validate_project_virtualenv()
     report = doctor(expected_conda_env=expected_conda_env, include_tts_runtime_probe=False)
 
     if (
@@ -393,6 +432,17 @@ def validate_runtime_environment(
             + _required_command_hint(expected_conda_env)
         )
 
+    if not skip_env_check:
+        prefix = Path(sys.prefix).resolve()
+        for package in REQUIRED_PACKAGES:
+            distribution = importlib.metadata.distribution(package)
+            origin = Path(distribution.locate_file("")).resolve()
+            if not origin.is_relative_to(prefix):
+                raise RuntimeError(
+                    f"Dependency '{package}' is outside the project environment: {origin}. "
+                    "Use bash run.sh and rerun bash scripts/setup.sh."
+                )
+
     return report
 
 
@@ -401,56 +451,19 @@ def validate_mlx_backend_preflight(
     expected_conda_env: str | None = None,
     skip_preflight: bool = False,
     timeout_seconds: int = 20,
-) -> None:
+) -> TTSRuntimeProbe | None:
     if skip_preflight:
-        return
+        return None
 
     resolved_expected_env = _resolve_expected_conda_env(expected_conda_env)
-
-    script = (
-        "from mlx_audio.tts.utils import load_model\n"
-        "print('mlx-audio runtime import OK')\n"
+    # The capability probe imports the same MLX TTS runtime in a child process.
+    # Reuse that result for the subsequent selected-model compatibility check.
+    probe = probe_tts_runtime_support(timeout_seconds=timeout_seconds)
+    if not probe.probe_error:
+        return probe
+    raise RuntimeError(
+        "MLX backend failed preflight before generation.\n"
+        f"{probe.probe_error}\n"
+        "Verify in the same shell:\n"
+        f"  {_mlx_import_check_command(resolved_expected_env)}"
     )
-    command = [sys.executable, "-c", script]
-
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=dict(os.environ),
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"MLX backend preflight timed out after {timeout_seconds}s.\n"
-            "Run commands via the Python environment where Libro-TTS dependencies are installed:\n"
-            f"  {_runtime_command(resolved_expected_env)}\n"
-            "Then verify:\n"
-            f"  {_mlx_import_check_command(resolved_expected_env)}"
-        ) from exc
-
-    if result.returncode == 0:
-        return
-
-    details: list[str] = [
-        "MLX backend failed preflight before generation.",
-        f"Exit code: {result.returncode}",
-    ]
-    if result.stdout.strip():
-        details.append("stdout:")
-        details.append(_trim_process_output(result.stdout))
-    if result.stderr.strip():
-        details.append("stderr:")
-        details.append(_trim_process_output(result.stderr))
-
-    details.extend(
-        [
-            "",
-            "This usually indicates a local mlx-audio/MLX runtime issue before model-specific compatibility checks.",
-            "Verify in the same shell:",
-            f"  {_mlx_import_check_command(resolved_expected_env)}",
-        ]
-    )
-    raise RuntimeError("\n".join(details))

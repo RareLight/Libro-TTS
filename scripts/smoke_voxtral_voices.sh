@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CONDA_ENV="${CONDA_ENV:-tts}"
 INPUT_FILE="${INPUT_FILE:-$ROOT_DIR/tests_output/_voxtral_voice_input.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/tests_output/voxtral_voice_sweep}"
 OFFLINE="${OFFLINE:-0}"
@@ -35,8 +34,7 @@ for voice in "${VOICES[@]}"; do
   out_file="$OUTPUT_DIR/${voice}.wav"
   log_file="$OUTPUT_DIR/${voice}.log"
   cmd=(
-    conda run -n "$CONDA_ENV"
-    python Libro-tts.py "$INPUT_FILE"
+    bash "$ROOT_DIR/run.sh" "$INPUT_FILE"
     --model voxtral_tts
     --voice "$voice"
     --output "$out_file"

@@ -26,6 +26,11 @@ class ChunkProgressBar:
         if self._bar is not None:
             self._bar.update(step)
 
+    def reset(self) -> None:
+        """Restart completed-chunk progress for a full serial retry."""
+        if self._bar is not None:
+            self._bar.reset()
+
     def close(self) -> None:
         if self._bar is not None:
             self._bar.close()

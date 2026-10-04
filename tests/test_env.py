@@ -7,9 +7,56 @@ from pathlib import Path
 
 from libro_tts.catalog import list_model_keys
 from libro_tts import env
+from libro_tts.paths import project_root
 
 
 class EnvTests(unittest.TestCase):
+    def setUp(self):
+        prefix = patch.object(env.sys, "prefix", str(project_root() / ".venv"))
+        base = patch.object(env.sys, "base_prefix", "/base-python")
+        prefix.start()
+        base.start()
+        self.addCleanup(prefix.stop)
+        self.addCleanup(base.stop)
+        distribution = patch.object(env.importlib.metadata, "distribution")
+        mocked_distribution = distribution.start()
+        mocked_distribution.return_value.locate_file.return_value = project_root() / ".venv/lib/python3.12/site-packages"
+        self.addCleanup(distribution.stop)
+
+    def test_generation_rejects_external_environment_before_dependency_imports(self):
+        with patch.object(env.sys, "prefix", "/unrelated/.venv"), patch.object(
+            env.importlib, "import_module"
+        ) as importer:
+            with self.assertRaisesRegex(RuntimeError, "requires this project's .venv"):
+                env.validate_runtime_environment()
+            importer.assert_not_called()
+
+    def test_project_environment_identity_does_not_resolve_python_symlink(self):
+        with patch.object(env.sys, "executable", "/base-python/bin/python"):
+            self.assertTrue(env.is_project_virtualenv())
+
+    def test_base_environment_cannot_impersonate_project_virtualenv(self):
+        with patch.object(env.sys, "base_prefix", env.sys.prefix):
+            self.assertFalse(env.is_project_virtualenv())
+
+    @patch("libro_tts.env._collect_package_versions", return_value={"mlx-audio": "0.4.3"})
+    @patch("libro_tts.env.importlib.import_module")
+    def test_dependency_metadata_outside_local_environment_is_rejected(self, _imports, _versions):
+        with patch.object(env.importlib.metadata, "distribution") as distribution:
+            distribution.return_value.locate_file.return_value = "/shared/site-packages"
+            with self.assertRaisesRegex(RuntimeError, "outside the project environment"):
+                env.validate_runtime_environment()
+
+    def test_external_encoder_is_rejected(self):
+        with patch.object(env.shutil, "which", return_value="/opt/homebrew/bin/ffmpeg"):
+            with self.assertRaisesRegex(RuntimeError, "project-local FFmpeg"):
+                env.validate_local_encoder()
+
+    def test_missing_encoder_is_rejected(self):
+        with patch.object(env.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "project-local FFmpeg"):
+                env.validate_local_encoder()
+
     @patch("libro_tts.env.importlib.import_module")
     @patch("libro_tts.env._collect_package_versions")
     def test_validate_runtime_environment_passes_without_env_name_requirement(
@@ -81,7 +128,7 @@ class EnvTests(unittest.TestCase):
 
     @patch("libro_tts.env.subprocess.run")
     def test_validate_mlx_backend_preflight_passes(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="Device(type=gpu, index=0)\n", stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"available_model_types":["kokoro"],"probe_error":null}\n', stderr="")
         env.validate_mlx_backend_preflight(expected_conda_env="tts", skip_preflight=False)
         self.assertTrue(mock_run.called)
 

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-import importlib.metadata
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -20,50 +18,37 @@ COPY_PATHS = (
     "libro_tts",
     "models",
     "reference_voices",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+    "run.sh",
+    "scripts/setup.sh",
+    "scripts/setup_runtime_tools.py",
+    "LICENSE",
 )
 IGNORE_NAMES = shutil.ignore_patterns(
     ".DS_Store",
     "__pycache__",
     "*.pyc",
     "*.pyo",
+    "token",
+    "stored_tokens",
+    "*.lock",
+    ".locks",
+    "*.incomplete",
+    ".staging",
 )
-REQUIREMENT_NAME_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)")
 
 
 def _build_requirements_text() -> str:
-    lines = [
-        "# Generated from the active Libro-TTS runtime environment",
-        f"# Python {platform.python_version()} on {platform.platform()}",
-        "",
-    ]
-
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "freeze"],
+        ["uv", "--no-cache", "export", "--project", str(PROJECT_ROOT), "--frozen",
+         "--no-dev", "--no-emit-project"],
         capture_output=True,
         text=True,
         check=True,
     )
-    requirement_lines: dict[str, str] = {}
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        normalized_line = line
-        if " @ file://" in line:
-            package_name = line.split(" @ ", 1)[0].strip()
-            normalized_line = f"{package_name}=={importlib.metadata.version(package_name)}"
-
-        match = REQUIREMENT_NAME_PATTERN.match(normalized_line)
-        if not match:
-            continue
-
-        requirement_lines[match.group(1).lower()] = normalized_line
-
-    lines.extend(requirement_lines.values())
-
-    lines.append("")
-    return "\n".join(lines)
+    return result.stdout
 
 
 def _portable_readme_text(export_dir: Path) -> str:
@@ -77,51 +62,38 @@ This folder is a copyable Libro-TTS release bundle exported from the source repo
 - The `libro_tts/` package
 - Local `models/` data and Hugging Face cache files already stored with the project
 - `reference_voices/`
-- A fully pinned `requirements.txt` generated from the runtime environment used to export this build
+- The project `pyproject.toml` and `uv.lock`, setup helpers, and launcher
+- A `requirements.txt` exported from the lock for inspection
 
 ## Runtime expectations
 
 - macOS on Apple Silicon
-- Python {platform.python_version()} is the recommended baseline because the requirements were captured from that runtime
-- The destination machine should create its own venv or conda env, then install `requirements.txt`
+- Python 3.12 (exported using Python {platform.python_version()})
+- uv for the locked installation; recreate `.venv` on the destination machine
 
 ## Setup
 
-### venv
-
 ```bash
 cd /path/to/{export_dir.name}
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-### conda
-
-```bash
-cd /path/to/{export_dir.name}
-conda create -n libro-tts python={platform.python_version()}
-conda activate libro-tts
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+bash scripts/setup.sh --no-dev
 ```
 
 ## Run
 
 ```bash
-python Libro-tts.py --diag
-python Libro-tts.py your_text_file.txt -o output/book_ch1
+bash run.sh --diag
+bash run.sh your_text_file.txt -o output/book_ch1
 ```
 
-The app no longer requires a conda env to be named `tts`; it runs in whatever Python environment has these dependencies installed.
+The launcher runs this project's `.venv`; generation rejects other environments.
 At startup, Libro-TTS validates that the active `mlx-audio` runtime can actually support the selected TTS model family before attempting any download or model load.
 
 ## Notes
 
 - This export keeps model data project-local, so copying this folder preserves the local model cache.
-- If you want a fully offline run on the destination machine, keep the `models/` folder intact.
-- `requirements.txt` is an exact environment capture, so installing into a clean Python {platform.python_version()} environment is the safest path.
+- Offline synthesis requires all auxiliary tokenizer/codec/voice assets as well as primary weights.
+- The remaining asset-portability migration is tracked in the source implementation checklist.
+- Use `bash scripts/setup.sh` to install from the project lock; the export never freezes a shared environment.
 """
 
 
@@ -152,6 +124,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if Path(sys.prefix).absolute() != PROJECT_ROOT / ".venv" or sys.prefix == sys.base_prefix:
+        raise SystemExit("Run the exporter using this project's .venv/bin/python.")
+    # Resolve the locked dependency export before copying potentially large assets.
+    requirements = _build_requirements_text()
     export_dir = args.output_dir.resolve()
     if export_dir.exists():
         raise SystemExit(f"Export directory already exists: {export_dir}")
@@ -161,7 +137,7 @@ def main() -> int:
     for relative_path in COPY_PATHS:
         _copy_path(relative_path, export_dir)
 
-    (export_dir / "requirements.txt").write_text(_build_requirements_text(), encoding="utf-8")
+    (export_dir / "requirements.txt").write_text(requirements, encoding="utf-8")
     (export_dir / "README.md").write_text(_portable_readme_text(export_dir), encoding="utf-8")
     shutil.copy2(PROJECT_ROOT / "README.md", export_dir / "README.upstream.md")
 

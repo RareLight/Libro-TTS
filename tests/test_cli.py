@@ -10,6 +10,18 @@ from libro_tts.runtime import BatchFailure, BatchRuntimeResult
 
 
 class CliTests(unittest.TestCase):
+    def test_diagnostics_exit_nonzero_on_required_probe_failure(self):
+        from libro_tts.env import EnvironmentReport, TTSRuntimeProbe
+
+        report = EnvironmentReport(
+            python_executable="/project/.venv/bin/python", python_version="3.12.2",
+            conda_env=None, expected_conda_env=None, package_versions={"mlx-audio": "0.4.3"},
+            tts_runtime_probe=TTSRuntimeProbe("0.4.3", probe_error="probe failed"),
+            is_project_virtualenv=True, is_local_ffmpeg=True,
+        )
+        with patch("libro_tts.cli.doctor", return_value=report), redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--diag"]), 1)
+
     def test_diag_command(self):
         with patch("libro_tts.cli.doctor") as mock_doctor:
             mock_doctor.return_value = type(
@@ -20,6 +32,13 @@ class CliTests(unittest.TestCase):
                     "python_version": "3.11",
                     "conda_env": "libro",
                     "expected_conda_env": None,
+                    "python_prefix": "/project/.venv",
+                    "project_virtualenv": "/project/.venv",
+                    "is_project_virtualenv": True,
+                    "platform_system": "Darwin",
+                    "platform_machine": "arm64",
+                    "ffmpeg_executable": "/project/.venv/bin/ffmpeg",
+                    "is_local_ffmpeg": True,
                     "package_versions": {
                         "mlx-audio": "0.3.1",
                         "mlx": "0.30.6",
@@ -72,14 +91,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("af_aoede", value)
         self.assertIn("bm_lewis", value)
 
-    @patch("libro_tts.cli.process_single_file")
+    @patch("libro_tts.runtime.process_single_file")
     @patch("libro_tts.cli.configure_logging")
     @patch("libro_tts.cli.configure_local_cache_environment")
     @patch("libro_tts.cli.prepare_runtime_dirs")
     @patch("libro_tts.cli.validate_tts_model_runtime_support")
     @patch("libro_tts.cli.validate_mlx_backend_preflight")
     @patch("libro_tts.cli.validate_runtime_environment")
-    @patch("libro_tts.cli.ModelStore")
+    @patch("libro_tts.store.ModelStore")
     def test_generation_runs_mlx_preflight(
         self,
         mock_model_store,
@@ -112,14 +131,14 @@ class CliTests(unittest.TestCase):
         self.assertTrue(mock_process_single_file.called)
         self.assertTrue(mock_configure_cache.called)
 
-    @patch("libro_tts.cli.process_batch_dir")
+    @patch("libro_tts.runtime.process_batch_dir")
     @patch("libro_tts.cli.configure_logging")
     @patch("libro_tts.cli.configure_local_cache_environment")
     @patch("libro_tts.cli.prepare_runtime_dirs")
     @patch("libro_tts.cli.validate_tts_model_runtime_support")
     @patch("libro_tts.cli.validate_mlx_backend_preflight")
     @patch("libro_tts.cli.validate_runtime_environment")
-    @patch("libro_tts.cli.ModelStore")
+    @patch("libro_tts.store.ModelStore")
     def test_batch_returns_nonzero_when_any_file_fails(
         self,
         mock_model_store,
@@ -161,14 +180,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("Batch completed with failures", out.getvalue())
         self.assertTrue(mock_model_store.called)
 
-    @patch("libro_tts.cli.process_single_file")
+    @patch("libro_tts.runtime.process_single_file")
     @patch("libro_tts.cli.configure_logging")
     @patch("libro_tts.cli.configure_local_cache_environment")
     @patch("libro_tts.cli.prepare_runtime_dirs")
     @patch("libro_tts.cli.validate_tts_model_runtime_support")
     @patch("libro_tts.cli.validate_mlx_backend_preflight")
     @patch("libro_tts.cli.validate_runtime_environment")
-    @patch("libro_tts.cli.ModelStore")
+    @patch("libro_tts.store.ModelStore")
     def test_single_default_output_keeps_audio_extension_for_dotted_stems(
         self,
         _mock_model_store,
@@ -197,14 +216,14 @@ class CliTests(unittest.TestCase):
         called_output_prefix = mock_process_single_file.call_args.kwargs["output_prefix"]
         self.assertTrue(called_output_prefix.endswith(".wav"))
 
-    @patch("libro_tts.cli.process_single_file")
+    @patch("libro_tts.runtime.process_single_file")
     @patch("libro_tts.cli.configure_logging")
     @patch("libro_tts.cli.configure_local_cache_environment")
     @patch("libro_tts.cli.prepare_runtime_dirs")
     @patch("libro_tts.cli.validate_tts_model_runtime_support")
     @patch("libro_tts.cli.validate_mlx_backend_preflight")
     @patch("libro_tts.cli.validate_runtime_environment")
-    @patch("libro_tts.cli.ModelStore")
+    @patch("libro_tts.store.ModelStore")
     def test_single_default_output_avoids_double_extension_for_audio_like_stem(
         self,
         _mock_model_store,
@@ -232,14 +251,14 @@ class CliTests(unittest.TestCase):
         called_output_prefix = mock_process_single_file.call_args.kwargs["output_prefix"]
         self.assertTrue(called_output_prefix.endswith("foo.wav"))
 
-    @patch("libro_tts.cli.process_single_file")
+    @patch("libro_tts.runtime.process_single_file")
     @patch("libro_tts.cli.configure_logging")
     @patch("libro_tts.cli.configure_local_cache_environment")
     @patch("libro_tts.cli.prepare_runtime_dirs")
     @patch("libro_tts.cli.validate_tts_model_runtime_support")
     @patch("libro_tts.cli.validate_mlx_backend_preflight")
     @patch("libro_tts.cli.validate_runtime_environment")
-    @patch("libro_tts.cli.ModelStore")
+    @patch("libro_tts.store.ModelStore")
     def test_cli_model_alias_resolves_to_canonical_model_key(
         self,
         _mock_model_store,

@@ -2,17 +2,31 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 from libro_tts.catalog import get_model_spec
 from libro_tts.store import ModelStore
 
 
+def write_assets(spec, target):
+    for pattern in spec.required_assets:
+        asset = target / pattern.replace("*", "model")
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.write_text("{}" if asset.suffix == ".json" else "asset", encoding="utf-8")
+
+
 class StoreTests(unittest.TestCase):
+    def make_store(self, **kwargs):
+        kwargs.setdefault("repo_info_loader", lambda **_: SimpleNamespace(
+            sha="a" * 40, siblings=[SimpleNamespace(rfilename="config.json", size=None)],
+        ))
+        return ModelStore(**kwargs)
+
     def test_first_run_download_then_local_reuse(self):
         spec = get_model_spec("kokoro")
         calls = {"count": 0}
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             calls["count"] += 1
             from pathlib import Path
 
@@ -20,10 +34,11 @@ class StoreTests(unittest.TestCase):
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text("{}", encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            store = ModelStore(root_dir=Path(tmp_dir), snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=Path(tmp_dir), snapshot_downloader=fake_snapshot_download)
             first = store.ensure_model(spec=spec, offline=False)
             second = store.ensure_model(spec=spec, offline=False)
 
@@ -33,7 +48,7 @@ class StoreTests(unittest.TestCase):
     def test_offline_fails_when_missing(self):
         spec = get_model_spec("dia")
         with tempfile.TemporaryDirectory() as tmp_dir:
-            store = ModelStore(root_dir=Path(tmp_dir))
+            store = self.make_store(root_dir=Path(tmp_dir))
             with self.assertRaises(RuntimeError):
                 store.ensure_model(spec=spec, offline=True)
 
@@ -41,17 +56,18 @@ class StoreTests(unittest.TestCase):
         spec = get_model_spec("kokoro")
         calls = {"count": 0}
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             calls["count"] += 1
             target = Path(local_dir)
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text("{}", encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             stale_dir = root / "kokoro" / "prince-canuma__Kokoro-82M"
             stale_dir.mkdir(parents=True, exist_ok=True)
             (stale_dir / "config.json").write_text("{}", encoding="utf-8")
@@ -78,17 +94,18 @@ class StoreTests(unittest.TestCase):
     def test_missing_model_type_is_backfilled_for_local_model(self):
         spec = get_model_spec("kokoro")
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             _ = repo_id
             target = Path(local_dir)
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text("{}", encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             result = store.ensure_model(spec=spec, offline=False)
 
             config = json.loads((result / "config.json").read_text(encoding="utf-8"))
@@ -98,17 +115,18 @@ class StoreTests(unittest.TestCase):
     def test_mismatched_model_type_is_normalized_to_spec_key(self):
         spec = get_model_spec("spark")
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             _ = repo_id
             target = Path(local_dir)
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text('{"model_type":"qwen2"}', encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             result = store.ensure_model(spec=spec, offline=False)
             config = json.loads((result / "config.json").read_text(encoding="utf-8"))
 
@@ -117,17 +135,18 @@ class StoreTests(unittest.TestCase):
     def test_csm_model_type_is_normalized_to_sesame(self):
         spec = get_model_spec("csm")
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             _ = repo_id
             target = Path(local_dir)
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text('{"model_type":"csm"}', encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             result = store.ensure_model(spec=spec, offline=False)
             config = json.loads((result / "config.json").read_text(encoding="utf-8"))
 
@@ -136,17 +155,18 @@ class StoreTests(unittest.TestCase):
     def test_voxtral_model_type_is_normalized_to_voxtral_tts(self):
         spec = get_model_spec("voxtral_tts")
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             _ = repo_id
             target = Path(local_dir)
             target.mkdir(parents=True, exist_ok=True)
             (target / "config.json").write_text('{"model_type":"llama"}', encoding="utf-8")
             (target / "model.safetensors").write_text("weights", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             result = store.ensure_model(spec=spec, offline=False)
             config = json.loads((result / "config.json").read_text(encoding="utf-8"))
 
@@ -156,7 +176,7 @@ class StoreTests(unittest.TestCase):
         spec = get_model_spec("voxtral_tts")
         calls = {"count": 0}
 
-        def fake_snapshot_download(repo_id: str, local_dir: str):
+        def fake_snapshot_download(repo_id: str, local_dir: str, revision: str):
             calls["count"] += 1
             _ = repo_id
             target = Path(local_dir)
@@ -164,6 +184,7 @@ class StoreTests(unittest.TestCase):
             (target / "config.json").write_text("{}", encoding="utf-8")
             (target / "model-00001-of-00002.safetensors").write_text("weights-1", encoding="utf-8")
             (target / "model-00002-of-00002.safetensors").write_text("weights-2", encoding="utf-8")
+            write_assets(spec, target)
             return str(target)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -178,7 +199,7 @@ class StoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            store = ModelStore(root_dir=root, snapshot_downloader=fake_snapshot_download)
+            store = self.make_store(root_dir=root, snapshot_downloader=fake_snapshot_download)
             result = store.ensure_model(spec=spec, offline=False)
             shard_one_exists = (result / "model-00001-of-00002.safetensors").exists()
             shard_two_exists = (result / "model-00002-of-00002.safetensors").exists()
@@ -208,7 +229,7 @@ class StoreTests(unittest.TestCase):
             )
             (target / "model-00001-of-00002.safetensors").write_text("weights-1", encoding="utf-8")
 
-            store = ModelStore(root_dir=root)
+            store = self.make_store(root_dir=root)
             with self.assertRaises(RuntimeError):
                 store.ensure_model(spec=spec, offline=True)
 

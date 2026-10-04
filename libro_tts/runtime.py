@@ -1,52 +1,64 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from contextlib import redirect_stderr, redirect_stdout
-import io
+from dataclasses import dataclass, field, replace
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import json
 import logging
 import multiprocessing as mp
+from numbers import Real
 from pathlib import Path
 import numpy as np
 import re
 import sys
 from typing import Any
 
+from .assets import AssetSpec, WHISPER, ensure_asset, local_asset_loading, prepare_model_assets
+from huggingface_hub import constants
+
 from .catalog import (
     DEFAULT_AUDIO_FORMAT,
+    CATALOG,
     DEFAULT_MAX_TOKENS,
     ModelSpec,
     accepted_model_types_for_key,
     get_model_spec,
     is_mlx_repo_id,
 )
-from .env import validate_model_load_preflight
+from .env import validate_model_load_preflight, validate_local_encoder
 from .progress import ChunkProgressBar
+from .diagnostics import TailCapture
+from .audio_output import AtomicAudioFile, StreamingWavOutput, AudioOutputError
 from .paths import project_root
 from .store import ModelStore, resolve_model
 from .text import sanitize_text_for_tts
+from .validation import (
+    MAX_CHUNK_DURATION_SECONDS, BASE_CHARS_PER_SECOND,
+    canonical_path_key,
+    ENCODED_AUDIO_FORMATS, validate_audio_format, validate_speed,
+    validate_input_path, validate_output_destination,
+    resolve_output_path as _resolve_output_path,
+)
 
 SPARK_ALLOWED_SPEEDS = (0.0, 0.5, 1.0, 1.5, 2.0)
 HF_REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
-VOICE_PROMPT_MODELS = frozenset({"csm", "dia", "spark", "chatterbox"})
-REF_TEXT_PROMPT_MODELS = frozenset({"csm", "dia", "spark"})
+VOICE_PROMPT_MODELS = frozenset(key for key, spec in CATALOG.items() if spec.voice_mode == "prompt")
+REF_TEXT_PROMPT_MODELS = frozenset(key for key, spec in CATALOG.items() if spec.requires_ref_text)
 REFERENCE_VOICE_DIR = "reference_voices"
 DEFAULT_STT_MODEL = "mlx-community/whisper-large-v3-turbo-asr-fp16"
 SPARK_MAX_REF_TEXT_CHARS = 320
 KNOWN_AUDIO_SUFFIXES = (".wav", ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".opus")
-_LOADED_MODEL_CACHE: dict[str, Any] = {}
+_LOADED_MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _LOADED_STT_MODEL: Any | None = None
+_LOADED_STT_REFERENCE: str | None = None
 _PARALLEL_WORKER_MODEL: Any | None = None
-_PARALLEL_WORKER_MODEL_REFERENCE: str | None = None
+_PARALLEL_WORKER_MODEL_REFERENCE: tuple[str, str] | None = None
 TARGET_CHUNK_DURATION_SECONDS = 12.5
 MIN_CHUNK_DURATION_SECONDS = 10.0
-MAX_CHUNK_DURATION_SECONDS = 15.0
-BASE_CHARS_PER_SECOND = 12.0
 MIN_CHARS_PER_CHUNK = 80
 DEFAULT_PARALLEL_WORKERS = 2
 DEFAULT_PARALLEL_MAX_CHUNKS = 12
 MIN_PARALLEL_CHUNK_COUNT = 3
-PARALLEL_DISABLED_MODEL_KEYS = frozenset({"csm", "dia"})
+PARALLEL_DISABLED_MODEL_KEYS = frozenset(key for key, spec in CATALOG.items() if not spec.parallel_safe)
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|\n{2,}")
 
 
@@ -65,6 +77,7 @@ class RuntimeOptions:
     input_encoding_fallbacks: tuple[str, ...] = ("utf-8-sig", "latin-1")
     parallel_workers: int = DEFAULT_PARALLEL_WORKERS
     parallel_max_chunks: int = DEFAULT_PARALLEL_MAX_CHUNKS
+    stream_wav: bool = True
 
 
 @dataclass
@@ -98,21 +111,23 @@ def _get_audio_write_fn():
     return audio_write
 
 
-def _get_whisper_model_cls():
-    from mlx_audio.stt.models.whisper import Model as WhisperModel
+def _get_stt_load_fn():
+    from mlx_audio.stt import load
 
-    return WhisperModel
+    return load
 
 
+@local_asset_loading()
 def _load_runtime_model(model_reference: str, logger: logging.Logger):
-    cached = _LOADED_MODEL_CACHE.get(model_reference)
+    cache_key = (model_reference, str(constants.HF_HUB_CACHE))
+    cached = _LOADED_MODEL_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
     logger.info("Loading TTS model runtime from '%s'", model_reference)
     load_model = _get_load_model_fn()
     model = load_model(model_reference)
-    _LOADED_MODEL_CACHE[model_reference] = model
+    _LOADED_MODEL_CACHE[cache_key] = model
     return model
 
 
@@ -131,7 +146,8 @@ def _display_model_name(model_reference: str) -> str:
     return name
 
 
-def _normalize_speed(model_key: str, speed: float | None) -> float | None:
+def _normalize_speed(model_key: str | None, speed: float | None) -> float | None:
+    validate_speed(model_key, speed)
     if speed is None:
         return None
 
@@ -247,9 +263,6 @@ def _resolve_effective_defaults(
     effective_speed = speed if speed is not None else default_speed
     effective_lang = lang_code if lang_code is not None else default_lang
 
-    if spec:
-        effective_speed = _normalize_speed(spec.key, effective_speed)
-
     return effective_voice, effective_speed, effective_lang
 
 
@@ -275,22 +288,21 @@ def _resolve_reference_text(ref_audio_path: str) -> str | None:
         return None
 
     decode_errors: list[str] = []
-    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+    for encoding in ("utf-8-sig", "latin-1"):
         try:
-            content = ref_text_path.read_text(encoding=encoding).strip()
+            content = _normalize_reference_text(ref_text_path.read_text(encoding=encoding))
         except UnicodeDecodeError as exc:
             decode_errors.append(f"{encoding}: byte {exc.start} ({exc.reason})")
             continue
-        if content:
-            return content
+        return content or None
     raise RuntimeError(
         f"Reference transcript exists but could not be decoded: {ref_text_path}. "
-        f"Attempted encodings: utf-8, utf-8-sig, latin-1. Errors: {' | '.join(decode_errors)}"
+        f"Attempted encodings: utf-8-sig, latin-1. Errors: {' | '.join(decode_errors)}"
     )
 
 
 def _normalize_reference_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"\s+", " ", value.lstrip().removeprefix("\ufeff")).strip()
 
 
 def _truncate_reference_text(value: str, max_chars: int) -> str:
@@ -315,6 +327,39 @@ def _resolve_effective_voice(model_key: str | None, voice: str | None) -> str | 
     return voice
 
 
+def _resolve_local_kokoro_voice(model_reference: str, voice: str, offline: bool,
+                                model_store: ModelStore | None = None) -> str:
+    """Use included voice tensors instead of requiring a second HF snapshot."""
+    voices_dir = Path(model_reference) / "voices"
+    resolved: list[str] = []
+    for name in voice.split(","):
+        candidate = Path(name).expanduser() if name.endswith(".safetensors") else voices_dir / f"{name}.safetensors"
+        if not candidate.is_file() or candidate.stat().st_size == 0:
+            if name.endswith(".safetensors") or model_store is None:
+                raise RuntimeError(
+                    f"Kokoro voice '{name}' is missing locally: {candidate}. "
+                    "Supply a nonempty voice tensor or acquire the selected voice online."
+                )
+            if not re.fullmatch(r"[a-z]{2}_[A-Za-z0-9_]+", name):
+                raise RuntimeError(f"Invalid Kokoro voice name: {name}")
+            asset = f"voices/{name}.safetensors"
+            snapshot = ensure_asset(model_store, AssetSpec(f"kokoro_voice_{name}", "prince-canuma/Kokoro-82M",
+                                                           (asset,), (asset,)), offline)
+            candidate = snapshot / asset
+        resolved.append(str(candidate.resolve()))
+    return ",".join(resolved)
+
+
+def _validate_voxtral_voice(model_reference: str, voice: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", voice):
+        raise RuntimeError(f"Invalid Voxtral voice name: {voice}")
+    root = Path(model_reference).resolve()
+    path = root / "voice_embedding" / f"{voice}.safetensors"
+    if not path.resolve().is_relative_to(root) or not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"Voxtral voice '{voice}' is missing a nonempty local embedding: {path}. "
+                           "Repair the model snapshot or choose an included voice.")
+
+
 def build_generate_kwargs(
     *,
     text: str,
@@ -334,6 +379,7 @@ def build_generate_kwargs(
         lang_code=lang_code,
     )
     effective_voice = _resolve_effective_voice(resolved_model_key, effective_voice)
+    effective_speed = _normalize_speed(resolved_model_key, effective_speed)
 
     cleaned_text = sanitize_text_for_tts(text)
 
@@ -346,10 +392,6 @@ def build_generate_kwargs(
     if effective_voice is not None and resolved_model_key in VOICE_PROMPT_MODELS:
         kwargs["ref_audio"] = effective_voice
 
-        if resolved_model_key in REF_TEXT_PROMPT_MODELS and "ref_audio" in kwargs:
-            ref_text = _resolve_reference_text(kwargs["ref_audio"])
-            if ref_text:
-                kwargs["ref_text"] = ref_text
     elif effective_voice is not None:
         kwargs["voice"] = effective_voice
 
@@ -369,23 +411,45 @@ def _auto_transcribe_reference_text(
     ref_audio_path: str,
     logger: logging.Logger,
     verbose: bool,
+    model_store: ModelStore | None = None,
+    offline: bool = False,
 ) -> str:
-    global _LOADED_STT_MODEL
+    global _LOADED_STT_MODEL, _LOADED_STT_REFERENCE
 
-    if _LOADED_STT_MODEL is None:
-        if verbose:
-            logger.info("Loading STT model '%s' for ref_text auto-transcription", DEFAULT_STT_MODEL)
-        whisper_model_cls = _get_whisper_model_cls()
-        _LOADED_STT_MODEL = whisper_model_cls.from_pretrained(path_or_hf_repo=DEFAULT_STT_MODEL)
-
-    result = _LOADED_STT_MODEL.generate(ref_audio_path)
-    transcript = getattr(result, "text", None)
-    if transcript is None:
-        transcript = str(result)
-    transcript = str(transcript).strip()
+    store = model_store if model_store is not None else ModelStore()
+    local_path = str(ensure_asset(store, WHISPER, offline))
+    with local_asset_loading(store.root_dir / ".hf"):
+        if _LOADED_STT_MODEL is None or _LOADED_STT_REFERENCE != local_path:
+            if verbose:
+                logger.info("Loading local STT model '%s' for ref_text auto-transcription", local_path)
+            _LOADED_STT_MODEL = _get_stt_load_fn()(local_path)
+            _LOADED_STT_REFERENCE = local_path
+        result = _LOADED_STT_MODEL.generate(ref_audio_path)
+    transcript = result if isinstance(result, str) else getattr(result, "text", None)
+    transcript = _normalize_reference_text(transcript) if isinstance(transcript, str) else ""
     if not transcript:
-        raise RuntimeError(f"Auto-transcription returned empty text for '{ref_audio_path}'.")
+        raise RuntimeError(f"Auto-transcription returned empty or invalid text for '{ref_audio_path}'.")
     return transcript
+
+
+@dataclass(frozen=True)
+class ResolvedReferenceTranscript:
+    text: str
+    source: str
+
+
+@dataclass
+class ReferenceContext:
+    """Successful transcript reuse scoped to one batch, never across runs."""
+    transcripts: dict[tuple[Any, ...], ResolvedReferenceTranscript] = field(default_factory=dict)
+
+
+def _reference_file_identity(path: Path) -> tuple[Any, ...]:
+    try:
+        info = path.stat()
+        return (str(path.resolve()), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except FileNotFoundError:
+        return (str(path.resolve()), None)
 
 
 def _populate_missing_ref_text(
@@ -394,19 +458,33 @@ def _populate_missing_ref_text(
     kwargs: dict[str, Any],
     logger: logging.Logger,
     verbose: bool,
-) -> None:
+    model_store: ModelStore | None = None,
+    offline: bool = False,
+    reference_context: ReferenceContext | None = None,
+) -> ResolvedReferenceTranscript | None:
     if model_key not in REF_TEXT_PROMPT_MODELS:
         return
     ref_audio = kwargs.get("ref_audio")
     if ref_audio is None:
         return
-    ref_text_source = "runtime"
+    cache_key = None
+    if reference_context is not None:
+        explicit = kwargs.get("ref_text")
+        cache_key = (model_key, str(model_store.root_dir.resolve()) if model_store else None, offline,
+                     _reference_file_identity(Path(ref_audio)),
+                     _reference_file_identity(Path(ref_audio).with_suffix(".txt")),
+                     _normalize_reference_text(explicit) if isinstance(explicit, str) else None)
+        cached = reference_context.transcripts.get(cache_key)
+        if cached is not None:
+            kwargs["ref_text"] = cached.text
+            return cached
+    ref_text_source: str
     ref_text: str | None = None
 
     existing_ref_text = kwargs.get("ref_text")
-    if isinstance(existing_ref_text, str) and existing_ref_text.strip():
+    if isinstance(existing_ref_text, str) and _normalize_reference_text(existing_ref_text):
         ref_text = existing_ref_text
-        ref_text_source = "kwargs"
+        ref_text_source = "explicit"
     else:
         ref_text_from_file = _resolve_reference_text(str(ref_audio))
         if ref_text_from_file:
@@ -424,6 +502,8 @@ def _populate_missing_ref_text(
             ref_audio_path=str(ref_audio),
             logger=logger,
             verbose=verbose,
+            model_store=model_store,
+            offline=offline,
         )
         ref_text_source = "stt"
 
@@ -439,13 +519,18 @@ def _populate_missing_ref_text(
             ref_audio,
         )
         try:
-            ref_text = _normalize_reference_text(
+            transcribed = _normalize_reference_text(
                 _auto_transcribe_reference_text(
                     ref_audio_path=str(ref_audio),
                     logger=logger,
                     verbose=verbose,
+                    model_store=model_store,
+                    offline=offline,
                 )
             )
+            if not transcribed:
+                raise RuntimeError("Auto-transcription returned empty text.")
+            ref_text = transcribed
             ref_text_source = "stt"
         except Exception as exc:
             logger.warning(
@@ -463,6 +548,10 @@ def _populate_missing_ref_text(
         )
 
     kwargs["ref_text"] = ref_text
+    resolved = ResolvedReferenceTranscript(text=ref_text, source=ref_text_source)
+    if reference_context is not None:
+        reference_context.transcripts[cache_key] = resolved
+    return resolved
 
 
 def _validate_model_generate_kwargs(*, model_key: str, kwargs: dict[str, Any]) -> None:
@@ -472,7 +561,7 @@ def _validate_model_generate_kwargs(*, model_key: str, kwargs: dict[str, Any]) -
     has_ref_audio = kwargs.get("ref_audio") is not None
     has_voice = kwargs.get("voice") is not None
 
-    if model_key in {"csm", "dia", "spark", "chatterbox"} and has_voice:
+    if has_voice:
         raise RuntimeError(
             f"Model '{model_key}' cloning expects ref_audio (and sometimes ref_text); "
             "internal kwargs unexpectedly contained 'voice'."
@@ -501,13 +590,52 @@ def _to_numpy_audio(audio: Any) -> np.ndarray:
         raise RuntimeError("Generated audio chunk is scalar; expected 1D waveform data.")
 
     if array.ndim == 2 and 1 in array.shape:
-        array = np.squeeze(array)
+        # Preserve legacy row/column mono handling, including one sample.
+        array = array.reshape(-1)
     elif array.ndim > 2:
         raise RuntimeError(
             f"Generated audio chunk has unsupported shape {array.shape}; expected mono or channel-last audio."
         )
 
+    if array.dtype.kind not in "iuf":
+        raise RuntimeError(f"Generated audio must contain real numeric samples; received {array.dtype}.")
+    if not np.isfinite(array).all():
+        raise RuntimeError("Generated audio contains non-finite samples (NaN or infinity).")
+    # The pinned encoder handles float32/float64 as normalized PCM; float16
+    # would otherwise be cast directly to int16, losing fractional samples.
+    if array.dtype == np.float16:
+        array = array.astype(np.float32)
     return array
+
+
+def _validate_sample_rate(value: Any) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise RuntimeError(f"Generated audio sample rate must be a positive integer; received {value!r}.")
+    try:
+        rate = int(value)
+    except (ValueError, OverflowError) as exc:
+        raise RuntimeError(f"Generated audio sample rate must be a positive integer; received {value!r}.") from exc
+    if rate <= 0 or rate != value:
+        raise RuntimeError(f"Generated audio sample rate must be a positive integer; received {value!r}.")
+    return rate
+
+
+def _validate_channel_layout(chunks: list[np.ndarray], chunk: np.ndarray) -> None:
+    if chunks and chunk.shape[1:] != chunks[0].shape[1:]:
+        raise RuntimeError(
+            "Inconsistent channel layouts across generated chunks: "
+            f"{chunks[0].shape} vs {chunk.shape}; expected consistent mono or channel-last audio."
+        )
+
+
+def _validate_audio_consistency(
+    chunks: list[np.ndarray], chunk: np.ndarray, sample_rate: int, expected_sample_rate: int | None,
+) -> int:
+    rate = _validate_sample_rate(sample_rate)
+    if expected_sample_rate is not None and rate != expected_sample_rate:
+        raise RuntimeError(f"Inconsistent sample rates across generated chunks: {expected_sample_rate} vs {rate}")
+    _validate_channel_layout(chunks, chunk)
+    return rate
 
 
 def _collect_generation_audio(
@@ -515,15 +643,12 @@ def _collect_generation_audio(
     fallback_sample_rate: int | None,
     progress: ChunkProgressBar | None = None,
 ) -> tuple[list[np.ndarray], int]:
-    sample_rate = fallback_sample_rate
+    sample_rate = _validate_sample_rate(fallback_sample_rate) if fallback_sample_rate is not None else None
     chunks: list[np.ndarray] = []
 
     for result in results:
         if result is None:
             continue
-        if progress is not None:
-            progress.update(1)
-
         audio = getattr(result, "audio", None)
         if audio is None:
             continue
@@ -533,16 +658,15 @@ def _collect_generation_audio(
             continue
 
         result_sample_rate = getattr(result, "sample_rate", None)
+        if result_sample_rate is None:
+            result_sample_rate = sample_rate
         if result_sample_rate is not None:
-            result_sample_rate = int(result_sample_rate)
-            if sample_rate is None:
-                sample_rate = result_sample_rate
-            elif sample_rate != result_sample_rate:
-                raise RuntimeError(
-                    f"Inconsistent sample rates across generated chunks: {sample_rate} vs {result_sample_rate}"
-                )
-
+            sample_rate = _validate_audio_consistency(chunks, chunk, result_sample_rate, sample_rate)
+        else:
+            _validate_channel_layout(chunks, chunk)
         chunks.append(chunk)
+        if progress is not None:
+            progress.update(1)
 
     if not chunks:
         raise RuntimeError("Model generation completed without any audio chunks.")
@@ -580,6 +704,7 @@ def _parallel_chunk_batch_size(options: RuntimeOptions, chunk_count: int) -> int
     return max(min(configured, chunk_count), 1)
 
 
+@local_asset_loading()
 def _generate_chunk_audio(
     *,
     model: Any,
@@ -590,12 +715,18 @@ def _generate_chunk_audio(
     chunk_kwargs = dict(kwargs_template)
     chunk_kwargs["text"] = text_chunk
     if suppress_model_output:
-        with io.StringIO() as sink, redirect_stdout(sink), redirect_stderr(sink):
-            chunk_results = model.generate(**chunk_kwargs)
-            chunk_segments, chunk_sample_rate = _collect_generation_audio(
-                results=chunk_results,
-                fallback_sample_rate=getattr(model, "sample_rate", None),
-            )
+        with TailCapture() as sink, redirect_stdout(sink), redirect_stderr(sink):
+            try:
+                chunk_results = model.generate(**chunk_kwargs)
+                chunk_segments, chunk_sample_rate = _collect_generation_audio(
+                    results=chunk_results,
+                    fallback_sample_rate=getattr(model, "sample_rate", None),
+                )
+            except Exception as exc:
+                tail = sink.getvalue().strip()
+                if tail:
+                    raise RuntimeError(f"{exc}\nRecent model output (tail):\n{tail}") from exc
+                raise
     else:
         chunk_results = model.generate(**chunk_kwargs)
         chunk_segments, chunk_sample_rate = _collect_generation_audio(
@@ -607,25 +738,27 @@ def _generate_chunk_audio(
 
 
 def _parallel_worker_generate(
-    task: tuple[int, str, str, dict[str, Any], bool]
+    task: tuple[int, str, str, dict[str, Any], bool, str]
 ) -> tuple[int, np.ndarray, int]:
     global _PARALLEL_WORKER_MODEL, _PARALLEL_WORKER_MODEL_REFERENCE
-    index, text_chunk, model_reference, kwargs_template, suppress_model_output = task
+    index, text_chunk, model_reference, kwargs_template, suppress_model_output, cache_root = task
 
-    if _PARALLEL_WORKER_MODEL is None or _PARALLEL_WORKER_MODEL_REFERENCE != model_reference:
-        _PARALLEL_WORKER_MODEL = _load_runtime_model(
-            model_reference,
-            logging.getLogger("libro_tts.parallel"),
+    with local_asset_loading(Path(cache_root)):
+        cache_key = (model_reference, str(constants.HF_HUB_CACHE))
+        if _PARALLEL_WORKER_MODEL is None or _PARALLEL_WORKER_MODEL_REFERENCE != cache_key:
+            _PARALLEL_WORKER_MODEL = _load_runtime_model(
+                model_reference,
+                logging.getLogger("libro_tts.parallel"),
+            )
+            _PARALLEL_WORKER_MODEL_REFERENCE = cache_key
+
+        chunk_audio, chunk_sample_rate = _generate_chunk_audio(
+            model=_PARALLEL_WORKER_MODEL,
+            kwargs_template=kwargs_template,
+            text_chunk=text_chunk,
+            suppress_model_output=suppress_model_output,
         )
-        _PARALLEL_WORKER_MODEL_REFERENCE = model_reference
-
-    chunk_audio, chunk_sample_rate = _generate_chunk_audio(
-        model=_PARALLEL_WORKER_MODEL,
-        kwargs_template=kwargs_template,
-        text_chunk=text_chunk,
-        suppress_model_output=suppress_model_output,
-    )
-    return index, chunk_audio, chunk_sample_rate
+        return index, chunk_audio, chunk_sample_rate
 
 
 def _generate_audio_serial(
@@ -635,9 +768,11 @@ def _generate_audio_serial(
     text_chunks: list[str],
     progress: ChunkProgressBar | None = None,
     suppress_model_output: bool = False,
+    audio_sink: StreamingWavOutput | None = None,
 ) -> tuple[list[np.ndarray], int]:
     combined_audio: list[np.ndarray] = []
     combined_sample_rate: int | None = None
+    accepted_chunks = 0
 
     for text_chunk in text_chunks:
         chunk_audio, chunk_sample_rate = _generate_chunk_audio(
@@ -646,18 +781,18 @@ def _generate_audio_serial(
             text_chunk=text_chunk,
             suppress_model_output=suppress_model_output,
         )
+        combined_sample_rate = _validate_audio_consistency(
+            combined_audio, chunk_audio, chunk_sample_rate, combined_sample_rate,
+        )
+        if audio_sink is not None:
+            audio_sink.append(chunk_audio, chunk_sample_rate)
+        else:
+            combined_audio.append(chunk_audio)
+        accepted_chunks += 1
         if progress is not None:
             progress.update(1)
-        if combined_sample_rate is None:
-            combined_sample_rate = chunk_sample_rate
-        elif combined_sample_rate != chunk_sample_rate:
-            raise RuntimeError(
-                "Inconsistent sample rates between synthesis chunks: "
-                f"{combined_sample_rate} vs {chunk_sample_rate}"
-            )
-        combined_audio.append(chunk_audio)
 
-    if combined_sample_rate is None or not combined_audio:
+    if combined_sample_rate is None or not accepted_chunks:
         raise RuntimeError("No audio returned from synthesis.")
 
     return combined_audio, combined_sample_rate
@@ -672,44 +807,39 @@ def _generate_audio_parallel(
     batch_size: int,
     progress: ChunkProgressBar | None = None,
     suppress_model_output: bool = False,
+    audio_sink: StreamingWavOutput | None = None,
 ) -> tuple[list[np.ndarray], int]:
     context = mp.get_context("spawn")
     combined_audio: list[np.ndarray] = []
     combined_sample_rate: int | None = None
+    accepted_chunks = 0
     with context.Pool(processes=workers) as pool:
         for start in range(0, len(text_chunks), batch_size):
             batch_chunks = text_chunks[start : start + batch_size]
             indexed_tasks = [
-                (start + offset, chunk, model_reference, kwargs_template, suppress_model_output)
+                (start + offset, chunk, model_reference, kwargs_template, suppress_model_output, str(constants.HF_HOME))
                 for offset, chunk in enumerate(batch_chunks)
             ]
             batch_results = pool.map(_parallel_worker_generate, indexed_tasks)
             batch_results.sort(key=lambda item: item[0])
 
             for _, chunk_audio, chunk_sample_rate in batch_results:
+                combined_sample_rate = _validate_audio_consistency(
+                    combined_audio, chunk_audio, chunk_sample_rate, combined_sample_rate,
+                )
+                if audio_sink is not None:
+                    audio_sink.append(chunk_audio, chunk_sample_rate)
+                else:
+                    combined_audio.append(chunk_audio)
+                accepted_chunks += 1
                 if progress is not None:
                     progress.update(1)
-                if combined_sample_rate is None:
-                    combined_sample_rate = chunk_sample_rate
-                elif combined_sample_rate != chunk_sample_rate:
-                    raise RuntimeError(
-                        "Inconsistent sample rates between synthesis chunks: "
-                        f"{combined_sample_rate} vs {chunk_sample_rate}"
-                    )
-                combined_audio.append(chunk_audio)
+            del batch_results
 
-    if combined_sample_rate is None or not combined_audio:
+    if combined_sample_rate is None or not accepted_chunks:
         raise RuntimeError("No audio returned from synthesis.")
 
     return combined_audio, combined_sample_rate
-
-
-def _resolve_output_path(output_target: str, audio_format: str) -> Path:
-    path = Path(output_target)
-    target_suffix = f".{audio_format.lstrip('.')}"
-    if path.suffix.lower() == target_suffix.lower():
-        return path
-    return path.with_suffix(target_suffix)
 
 
 def _normalized_output_stem(input_file: Path) -> str:
@@ -737,6 +867,37 @@ def default_output_target_for_input(
     if output_dir is None:
         return str(input_file.with_name(filename))
     return str(output_dir / filename)
+
+
+def _plan_batch_outputs(
+    files: list[Path], output_dir: Path, audio_format: str,
+) -> list[tuple[Path, Path]]:
+    plan: list[tuple[Path, Path]] = []
+    destinations: dict[str, list[tuple[Path, Path]]] = {}
+    for input_file in files:
+        target = default_output_target_for_input(
+            input_file=input_file, audio_format=audio_format, output_dir=output_dir,
+        )
+        output_path = _resolve_output_path(target, audio_format)
+        # Treat case and canonical Unicode variants as ambiguous even on a
+        # case-sensitive volume. Resolve existing output symlinks as writes do.
+        key = canonical_path_key(output_path)
+        entry = (input_file, output_path)
+        destinations.setdefault(key, []).append(entry)
+        plan.append(entry)
+
+    collisions = [entries for entries in destinations.values() if len(entries) > 1]
+    if collisions:
+        details = "\n".join(
+            "  " + ", ".join(repr(source.name) for source, _ in entries)
+            + f" -> {entries[0][1]}"
+            for entries in collisions
+        )
+        raise ValueError(
+            "Batch output collisions detected; no files were processed. "
+            "Rename the conflicting inputs or place them in separate input directories:\n" + details
+        )
+    return plan
 
 
 def _build_encoding_order(options: RuntimeOptions) -> list[str]:
@@ -775,7 +936,7 @@ def _read_input_text(
                 logger.warning(warning)
             else:
                 _print_user_message(warning, error=True)
-        return text
+        return text.removeprefix("\ufeff")
 
     raise RuntimeError(
         f"Failed to decode input file '{input_file}'. Attempted encodings: {', '.join(encodings)}. "
@@ -791,11 +952,12 @@ def _write_output_audio(
     sample_rate: int,
 ) -> Path:
     output_path = _resolve_output_path(output_target, audio_format)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    audio_write = _get_audio_write_fn()
-    audio_write(str(output_path), audio, sample_rate, format=audio_format)
-    return output_path
+    try:
+        with AtomicAudioFile(output_path) as transaction:
+            _get_audio_write_fn()(str(transaction.temporary), audio, sample_rate, format=audio_format)
+            return transaction.publish()
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write audio output '{output_path}': {exc}") from exc
 
 
 def _validate_local_model_path(path: Path, model_key: str, logger: logging.Logger) -> None:
@@ -854,11 +1016,9 @@ def _resolve_model_reference(
                 raise RuntimeError(
                     "--model-path must reference an MLX repo id (mlx-community/*) or an existing local path."
                 )
-            if options.offline:
-                raise RuntimeError(
-                    "--offline was provided but --model-path does not point to an existing local path."
-                )
-            return override, None
+            override_spec = replace(get_model_spec(options.model_key), repo_candidates=(override,))
+            local = model_store.ensure_model(spec=override_spec, offline=options.offline)
+            return str(local), None
 
         raise FileNotFoundError(
             "--model-path did not resolve to an existing local path. "
@@ -883,7 +1043,23 @@ def generate_tts(
     model_store: ModelStore,
     options: RuntimeOptions,
     logger: logging.Logger,
+    reference_context: ReferenceContext | None = None,
 ) -> None:
+    validate_audio_format(options.audio_format)
+    validate_speed(options.model_key, options.speed)
+    cleaned_text = sanitize_text_for_tts(text.removeprefix("\ufeff"))
+    if not cleaned_text.strip():
+        raise ValueError("Input contains no text for synthesis after preprocessing.")
+    validate_output_destination(_resolve_output_path(output_prefix, options.audio_format))
+    if options.audio_format.lower() in ENCODED_AUDIO_FORMATS:
+        validate_local_encoder()
+    # Resolve cheap voice/prompt/default checks before downloading model assets.
+    requested_spec = None if options.model_path_override else get_model_spec(options.model_key)
+    kwargs = build_generate_kwargs(
+        text=cleaned_text, spec=requested_spec, model_key=options.model_key,
+        voice=options.voice, speed=options.speed, lang_code=options.lang_code,
+        max_tokens=options.max_tokens, verbose=options.verbose,
+    )
     model_reference, spec = _resolve_model_reference(
         model_store=model_store,
         options=options,
@@ -891,125 +1067,136 @@ def generate_tts(
     )
     resolved_model_key = spec.key if spec is not None else options.model_key
     validate_model_load_preflight(resolved_model_key, model_reference)
-    model = _load_runtime_model(model_reference, logger)
+    prepare_model_assets(model_store, resolved_model_key, model_reference, options.offline)
 
-    kwargs = build_generate_kwargs(
-        text=text,
-        spec=spec,
-        model_key=options.model_key,
-        voice=options.voice,
-        speed=options.speed,
-        lang_code=options.lang_code,
-        max_tokens=options.max_tokens,
-        verbose=options.verbose,
-    )
+    voice_label = kwargs.get("voice")
+    if resolved_model_key == "kokoro" and isinstance(voice_label, str):
+        kwargs["voice"] = _resolve_local_kokoro_voice(model_reference, voice_label, options.offline, model_store)
+    if resolved_model_key == "voxtral_tts":
+        _validate_voxtral_voice(model_reference, str(voice_label or "casual_male"))
     try:
-        _populate_missing_ref_text(
+        reference = _populate_missing_ref_text(
             model_key=resolved_model_key,
             kwargs=kwargs,
             logger=logger,
             verbose=options.verbose,
+            model_store=model_store,
+            offline=options.offline,
+            reference_context=reference_context,
         )
+        if reference is not None:
+            logger.info("Using %s reference transcript for '%s'", reference.source, kwargs.get("ref_audio"))
     except Exception as exc:
         raise RuntimeError(
             f"Failed to prepare reference transcript for model '{resolved_model_key}': {exc}"
         ) from exc
     _validate_model_generate_kwargs(model_key=resolved_model_key, kwargs=kwargs)
 
-    text_to_generate = kwargs.pop("text", "")
-    text_chunks = _chunk_text_for_generation(text_to_generate, kwargs.get("speed"))
-    if not text_chunks:
-        raise RuntimeError("No text available for synthesis after preprocessing.")
+    with local_asset_loading(model_store.root_dir / ".hf"), ExitStack() as output_stack:
+        audio_sink = output_stack.enter_context(StreamingWavOutput(_resolve_output_path(output_prefix, options.audio_format))) if options.stream_wav and options.audio_format.lower() == "wav" else None
+        text_to_generate = kwargs.pop("text", "")
+        text_chunks = _chunk_text_for_generation(text_to_generate, kwargs.get("speed"))
+        if not text_chunks:
+            raise RuntimeError("No text available for synthesis after preprocessing.")
 
-    if not options.verbose:
-        voice_label = kwargs.get("voice")
-        if voice_label is None and kwargs.get("ref_audio") is not None:
-            voice_label = Path(str(kwargs["ref_audio"])).name
-        _print_user_message(
-            "Model: "
-            f"{_display_model_name(model_reference)} | "
-            f"voice={voice_label or 'default'} | "
-            f"speed={kwargs.get('speed', 'default')} | "
-            f"lang={kwargs.get('lang_code', 'default')}"
+        if not options.verbose:
+            if voice_label is None and kwargs.get("ref_audio") is not None:
+                voice_label = Path(str(kwargs["ref_audio"])).name
+            _print_user_message(
+                "Model: "
+                f"{_display_model_name(model_reference)} | "
+                f"voice={voice_label or 'default'} | "
+                f"speed={kwargs.get('speed', 'default')} | "
+                f"lang={kwargs.get('lang_code', 'default')}"
+            )
+        model_parallel_supported = _model_supports_parallel_chunk_generation(resolved_model_key)
+        use_parallel = _should_parallelize_chunk_generation(
+            options,
+            len(text_chunks),
+            model_key=resolved_model_key,
         )
-    model_parallel_supported = _model_supports_parallel_chunk_generation(resolved_model_key)
-    use_parallel = _should_parallelize_chunk_generation(
-        options,
-        len(text_chunks),
-        model_key=resolved_model_key,
-    )
-    workers = max(int(options.parallel_workers), 1)
-    batch_size = _parallel_chunk_batch_size(options, len(text_chunks))
+        workers = max(int(options.parallel_workers), 1)
+        batch_size = _parallel_chunk_batch_size(options, len(text_chunks))
 
-    if not options.verbose and len(text_chunks) > 1:
-        if use_parallel:
-            _print_user_message(
-                f"Chunks: {len(text_chunks)} | mode=parallel | workers={workers} | batch={batch_size}"
-            )
-        elif not model_parallel_supported:
-            _print_user_message(
-                f"Chunks: {len(text_chunks)} | mode=serial ({resolved_model_key} reliability guard)"
-            )
-        else:
-            _print_user_message(f"Chunks: {len(text_chunks)} | mode=serial")
-
-    progress = ChunkProgressBar(
-        desc=f"Generating {_display_model_name(model_reference)}",
-        enabled=not options.verbose,
-        total=len(text_chunks),
-    )
-
-    try:
-        if use_parallel:
-            try:
-                combined_audio, combined_sample_rate = _generate_audio_parallel(
-                    model_reference=model_reference,
-                    kwargs_template=kwargs,
-                    text_chunks=text_chunks,
-                    workers=workers,
-                    batch_size=batch_size,
-                    progress=progress,
-                    suppress_model_output=not options.verbose,
+        if not options.verbose and len(text_chunks) > 1:
+            if use_parallel:
+                _print_user_message(
+                    f"Chunks: {len(text_chunks)} | mode=parallel | workers={workers} | batch={batch_size}"
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Parallel chunk synthesis failed (%s). Falling back to serial mode.",
-                    exc,
+            elif not model_parallel_supported:
+                _print_user_message(
+                    f"Chunks: {len(text_chunks)} | mode=serial ({resolved_model_key} reliability guard)"
                 )
-                if not options.verbose:
-                    _print_user_message(
-                        "Parallel chunk synthesis failed; retrying in serial mode.",
-                        error=True,
+            else:
+                _print_user_message(f"Chunks: {len(text_chunks)} | mode=serial")
+
+        progress = ChunkProgressBar(
+            desc=f"Generating {_display_model_name(model_reference)}",
+            enabled=not options.verbose,
+            total=len(text_chunks),
+        )
+
+        try:
+            if use_parallel:
+                try:
+                    combined_audio, combined_sample_rate = _generate_audio_parallel(
+                        model_reference=model_reference,
+                        kwargs_template=kwargs,
+                        text_chunks=text_chunks,
+                        workers=workers,
+                        batch_size=batch_size,
+                        progress=progress,
+                        suppress_model_output=not options.verbose,
+                        audio_sink=audio_sink,
                     )
+                except AudioOutputError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Parallel chunk synthesis failed (%s). Falling back to serial mode.",
+                        exc,
+                    )
+                    if not options.verbose:
+                        _print_user_message(
+                            "Parallel chunk synthesis failed; retrying in serial mode.",
+                            error=True,
+                        )
+                    progress.reset()
+                    if audio_sink is not None:
+                        audio_sink.reset()
+                    model = _load_runtime_model(model_reference, logger)
+                    combined_audio, combined_sample_rate = _generate_audio_serial(
+                        model=model,
+                        kwargs_template=kwargs,
+                        text_chunks=text_chunks,
+                        progress=progress,
+                        suppress_model_output=not options.verbose,
+                        audio_sink=audio_sink,
+                    )
+            else:
+                model = _load_runtime_model(model_reference, logger)
                 combined_audio, combined_sample_rate = _generate_audio_serial(
                     model=model,
                     kwargs_template=kwargs,
                     text_chunks=text_chunks,
                     progress=progress,
                     suppress_model_output=not options.verbose,
+                    audio_sink=audio_sink,
                 )
-        else:
-            combined_audio, combined_sample_rate = _generate_audio_serial(
-                model=model,
-                kwargs_template=kwargs,
-                text_chunks=text_chunks,
-                progress=progress,
-                suppress_model_output=not options.verbose,
-            )
-    finally:
-        progress.close()
+        finally:
+            progress.close()
 
-    audio = combined_audio[0] if len(combined_audio) == 1 else np.concatenate(combined_audio, axis=0)
-    sample_rate = combined_sample_rate
-    output_path = _write_output_audio(
-        output_target=output_prefix,
-        audio_format=options.audio_format,
-        audio=audio,
-        sample_rate=sample_rate,
-    )
-    logger.info("Saved generated audio to '%s'", output_path)
-    if not options.verbose:
-        _print_user_message(f"Saved: {output_path}")
+        if audio_sink is not None:
+            output_path = audio_sink.publish()
+        else:
+            audio = combined_audio[0] if len(combined_audio) == 1 else np.concatenate(combined_audio, axis=0)
+            output_path = _write_output_audio(
+                output_target=output_prefix, audio_format=options.audio_format,
+                audio=audio, sample_rate=combined_sample_rate,
+            )
+        logger.info("Saved generated audio to '%s'", output_path)
+        if not options.verbose:
+            _print_user_message(f"Saved: {output_path}")
 
 
 def process_single_file(
@@ -1019,11 +1206,16 @@ def process_single_file(
     model_store: ModelStore,
     options: RuntimeOptions,
     logger: logging.Logger,
+    prepared_text: str | None = None,
+    reference_context: ReferenceContext | None = None,
 ) -> RuntimeResult:
-    if not input_file.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_file}")
+    validate_audio_format(options.audio_format)
+    validate_speed(options.model_key, options.speed)
+    validate_input_path(input_file)
+    validate_output_destination(_resolve_output_path(output_prefix, options.audio_format),
+                                protected_inputs=frozenset({canonical_path_key(input_file)}))
 
-    text = _read_input_text(
+    text = prepared_text if prepared_text is not None else _read_input_text(
         input_file=input_file,
         options=options,
         logger=logger,
@@ -1034,6 +1226,7 @@ def process_single_file(
         model_store=model_store,
         options=options,
         logger=logger,
+        reference_context=reference_context,
     )
     return RuntimeResult(files_processed=1)
 
@@ -1046,33 +1239,37 @@ def process_batch_dir(
     options: RuntimeOptions,
     logger: logging.Logger,
 ) -> BatchRuntimeResult:
-    if not input_dir.exists() or not input_dir.is_dir():
-        raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
+    validate_input_path(input_dir, directory=True)
+    validate_audio_format(options.audio_format)
+    validate_speed(options.model_key, options.speed)
 
     files = sorted(
         path
         for path in input_dir.iterdir()
         if path.is_file() and path.name.lower().endswith(".txt")
     )
+    plan = _plan_batch_outputs(files, output_dir, options.audio_format)
+    validate_output_destination(output_dir, directory=True)
+    protected_inputs = frozenset(canonical_path_key(path) for path in files)
+    for _, output_path in plan:
+        validate_output_destination(output_path, protected_inputs=protected_inputs)
+    if options.audio_format.lower() in ENCODED_AUDIO_FORMATS:
+        validate_local_encoder()
+    output_dir.mkdir(parents=True, exist_ok=True)
     files_processed = 0
     failures: list[BatchFailure] = []
-    for index, input_file in enumerate(files, start=1):
-        output_prefix = default_output_target_for_input(
-            input_file=input_file,
-            audio_format=options.audio_format,
-            output_dir=output_dir,
-        )
+    reference_context = ReferenceContext()
+    for index, (input_file, output_path) in enumerate(plan, start=1):
         if not options.verbose:
             _print_user_message(f"[{index}/{len(files)}] {input_file.name}")
         try:
             process_single_file(
                 input_file=input_file,
-                output_prefix=output_prefix,
+                output_prefix=str(output_path),
                 model_store=model_store,
                 options=options,
                 logger=logger,
+                reference_context=reference_context,
             )
             files_processed += 1
             logger.info("Processed: %s", input_file.name)

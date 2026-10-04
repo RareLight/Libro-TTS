@@ -1,0 +1,659 @@
+{
+  "date": "2026-10-03",
+  "final_cli_path_smoke": [
+    {
+      "channels": 1,
+      "frames": 901800,
+      "mode": "serial",
+      "model": "kokoro",
+      "sample_rate": 24000,
+      "sample_width": 2
+    },
+    {
+      "channels": 1,
+      "frames": 901800,
+      "mode": "parallel",
+      "model": "kokoro",
+      "sample_rate": 24000,
+      "sample_width": 2
+    },
+    {
+      "channels": 1,
+      "frames": 1052672,
+      "mode": "serial",
+      "model": "soprano",
+      "sample_rate": 32000,
+      "sample_width": 2
+    },
+    {
+      "channels": 1,
+      "frames": 1062912,
+      "mode": "parallel",
+      "model": "soprano",
+      "sample_rate": 32000,
+      "sample_width": 2
+    }
+  ],
+  "mlx": "0.30.6",
+  "mlx_audio_revision": "e42e1431fcf89af313375296c46d03a0153c4aa7",
+  "platform": "macOS arm64",
+  "python": "3.12.2",
+  "reports": {
+    "fixture_buffered_100": {
+      "fixture": true,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding; controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "fixture",
+      "modes": [
+        {
+          "process_wall_seconds": 1.9542548750032438,
+          "rss_samples": 9,
+          "runs": [
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 96000000,
+              "concatenate_seconds": 0.009586125001078472,
+              "encode_seconds": 0.827829458998167,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.017217625005287118,
+              "parent_load_seconds": 0.00014783299411647022,
+              "parent_peak_rss_bytes": 1508655104,
+              "prepare_seconds": 0.17918433299928438,
+              "repeat": 1,
+              "rtf": 0.0010339653749979335,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 1.0339653749979334
+            },
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 96000000,
+              "concatenate_seconds": 0.00670725000964012,
+              "encode_seconds": 0.7845269169920357,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.016293207998387516,
+              "parent_load_seconds": 0.00017658399883657694,
+              "parent_peak_rss_bytes": 1646034944,
+              "prepare_seconds": 3.083299088757485e-05,
+              "repeat": 2,
+              "rtf": 0.0008077347919897875,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 0.8077347919897875
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 1646034944,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 2.624782792001497,
+          "rss_samples": 12,
+          "runs": [
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 96000000,
+              "concatenate_seconds": 0.006838708010036498,
+              "encode_seconds": 0.823257541997009,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.3106097919953754,
+              "parent_load_seconds": 0.0001598329981788993,
+              "parent_peak_rss_bytes": 1529053184,
+              "prepare_seconds": 0.17270787499728613,
+              "repeat": 1,
+              "rtf": 0.0013135737499978858,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 1.313573749997886
+            },
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 96000000,
+              "concatenate_seconds": 0.010334708000300452,
+              "encode_seconds": 0.8324756250076462,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.35839574999408796,
+              "parent_load_seconds": 0.0001793749979697168,
+              "parent_peak_rss_bytes": 1618345984,
+              "prepare_seconds": 3.4042008337564766e-05,
+              "repeat": 2,
+              "rtf": 0.0012014195000083418,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 1.2014195000083419
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 1618345984,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 5.387500277720392e-05
+    },
+    "fixture_incremental_100": {
+      "buffered_wav": false,
+      "fixture": true,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding (incremental writes are part of generation time); controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "fixture",
+      "modes": [
+        {
+          "process_wall_seconds": 0.6093287499970756,
+          "rss_samples": 3,
+          "runs": [
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 5.00003807246685e-07,
+              "encode_seconds": 0.001413791993400082,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.061164875005488284,
+              "parent_load_seconds": 0.00038516600034199655,
+              "parent_peak_rss_bytes": 89702400,
+              "prepare_seconds": 0.36283958399144467,
+              "repeat": 1,
+              "rtf": 0.0004258039169944823,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 0.4258039169944823
+            },
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 6.250047590583563e-07,
+              "encode_seconds": 0.008109082991722971,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.06409329199232161,
+              "parent_load_seconds": 0.00038475000474136323,
+              "parent_peak_rss_bytes": 95633408,
+              "prepare_seconds": 3.504099731799215e-05,
+              "repeat": 2,
+              "rtf": 7.2622790990863e-05,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 0.072622790990863
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 82984960,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 1.1171606669959147,
+          "rss_samples": 5,
+          "runs": [
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 5.420006345957518e-07,
+              "encode_seconds": 0.0020542920101433992,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.4230135830002837,
+              "parent_load_seconds": 0.0003892919921781868,
+              "parent_peak_rss_bytes": 116424704,
+              "prepare_seconds": 0.18920508300652727,
+              "repeat": 1,
+              "rtf": 0.0006146627920097671,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 0.6146627920097671
+            },
+            {
+              "audio_seconds": 1000.0,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 96000000,
+              "chunks": 100,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 5.420006345957518e-07,
+              "encode_seconds": 0.003438707994064316,
+              "encoded_bytes": 48000044,
+              "frames": 24000000,
+              "generation_seconds": 0.3906442080042325,
+              "parent_load_seconds": 0.00045375000627245754,
+              "parent_peak_rss_bytes": 120963072,
+              "prepare_seconds": 3.6124998587183654e-05,
+              "repeat": 2,
+              "rtf": 0.00039457333300379105,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 0.39457333300379105
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 326664192,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 5.024998972658068e-05
+    },
+    "kokoro_buffered_3": {
+      "fixture": false,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding; controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "kokoro",
+      "modes": [
+        {
+          "process_wall_seconds": 4.977946500002872,
+          "rss_samples": 22,
+          "runs": [
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 4977600,
+              "concatenate_seconds": 0.0004087080014869571,
+              "encode_seconds": 0.031313416999182664,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.024038957999437,
+              "parent_load_seconds": 1.4947512499929871,
+              "parent_peak_rss_bytes": 661078016,
+              "prepare_seconds": 0.1819027500023367,
+              "repeat": 1,
+              "rtf": 0.14396972354852192,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 3.7324150829954306
+            },
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 4977600,
+              "concatenate_seconds": 0.0005667919904226437,
+              "encode_seconds": 0.021700375000364147,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 1.0056071250000969,
+              "parent_load_seconds": 0.00017491600010544062,
+              "parent_peak_rss_bytes": 687308800,
+              "prepare_seconds": 0.009103333999519236,
+              "repeat": 2,
+              "rtf": 0.04000588397263291,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 1.0371525419905083
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 664961024,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 5.624328749996494,
+          "rss_samples": 25,
+          "runs": [
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 4977600,
+              "concatenate_seconds": 0.0006863750022603199,
+              "encode_seconds": 0.028793457997380756,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.6854151669977,
+              "parent_load_seconds": 0.00011049999739043415,
+              "parent_peak_rss_bytes": 114622464,
+              "prepare_seconds": 0.18858816700230818,
+              "repeat": 1,
+              "rtf": 0.11199975571830433,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 2.9035936669970397
+            },
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 4977600,
+              "concatenate_seconds": 0.0007962500094436109,
+              "encode_seconds": 0.027117582998471335,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.5771796250046464,
+              "parent_load_seconds": 0.00010516699694562703,
+              "parent_peak_rss_bytes": 136380416,
+              "prepare_seconds": 0.009853790994384326,
+              "repeat": 2,
+              "rtf": 0.10086990997122049,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 2.6150524160038913
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 1400193024,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 0.3883090840099612
+    },
+    "kokoro_incremental_3": {
+      "buffered_wav": false,
+      "fixture": false,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding (incremental writes are part of generation time); controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "kokoro",
+      "modes": [
+        {
+          "process_wall_seconds": 5.547231082993676,
+          "rss_samples": 23,
+          "runs": [
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 1.0830117389559746e-06,
+              "encode_seconds": 0.003424083988647908,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.7085006669949507,
+              "parent_load_seconds": 1.168404708005255,
+              "parent_peak_rss_bytes": 661045248,
+              "prepare_seconds": 0.23634424999181647,
+              "repeat": 1,
+              "rtf": 0.1587916988232366,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 4.116674791992409
+            },
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 1.45800004247576e-06,
+              "encode_seconds": 0.0007815419958205894,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 1.1873195420048432,
+              "parent_load_seconds": 0.00044066600094083697,
+              "parent_peak_rss_bytes": 661045248,
+              "prepare_seconds": 0.013821333996020257,
+              "repeat": 2,
+              "rtf": 0.04637857442613953,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 1.2023645419976674
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 644841472,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 6.1936962499894435,
+          "rss_samples": 27,
+          "runs": [
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 9.999930625781417e-07,
+              "encode_seconds": 0.000981750010396354,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.993092375007109,
+              "parent_load_seconds": 0.00033720799547154456,
+              "parent_peak_rss_bytes": 74874880,
+              "prepare_seconds": 0.2017674579983577,
+              "repeat": 1,
+              "rtf": 0.12328562356815417,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 3.196179791004397
+            },
+            {
+              "audio_seconds": 25.925,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4977600,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 1.5419936971738935e-06,
+              "encode_seconds": 0.0009919580043060705,
+              "encoded_bytes": 1244444,
+              "frames": 622200,
+              "generation_seconds": 2.8711577500071144,
+              "parent_load_seconds": 0.00037695799255743623,
+              "parent_peak_rss_bytes": 88424448,
+              "prepare_seconds": 0.012743917002808303,
+              "repeat": 2,
+              "rtf": 0.11129304243010543,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 2.8852721250004834
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 1424523264,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 0.5363435420003952
+    },
+    "kokoro_incremental_40": {
+      "buffered_wav": false,
+      "fixture": false,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding (incremental writes are part of generation time); controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "kokoro",
+      "modes": [
+        {
+          "process_wall_seconds": 21.245197124997503,
+          "rss_samples": 91,
+          "runs": [
+            {
+              "audio_seconds": 367.825,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 70622400,
+              "chunks": 40,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 1.0840012691915035e-06,
+              "encode_seconds": 0.0006295409984886646,
+              "encoded_bytes": 17655644,
+              "frames": 8827800,
+              "generation_seconds": 19.73678220799775,
+              "parent_load_seconds": 1.0589942500082543,
+              "parent_peak_rss_bytes": 666746880,
+              "prepare_seconds": 0.2142353329982143,
+              "repeat": 1,
+              "rtf": 0.0571213006620104,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 21.010642416003975
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 666222592,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 19.001688916992862,
+          "rss_samples": 76,
+          "runs": [
+            {
+              "audio_seconds": 367.825,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 70622400,
+              "chunks": 40,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 9.159994078800082e-07,
+              "encode_seconds": 0.0010187499865423888,
+              "encoded_bytes": 17655644,
+              "frames": 8827800,
+              "generation_seconds": 18.547634875008953,
+              "parent_load_seconds": 0.00032645900500938296,
+              "parent_peak_rss_bytes": 140558336,
+              "prepare_seconds": 0.2843599159969017,
+              "repeat": 1,
+              "rtf": 0.05120190556921583,
+              "sample_rate": 24000,
+              "success": true,
+              "wall_seconds": 18.833340915996814
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 1430470656,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 0.4354402909957571
+    },
+    "soprano_incremental_3": {
+      "buffered_wav": false,
+      "fixture": false,
+      "measurement_notes": "Generation includes new spawn pool startup/model load and full PCM IPC. Runtime timings include WAV encoding (incremental writes are part of generation time); controller/preflight are separate. Repeat serial uses warm model cache; parallel creates a new pool each time. RSS sums sampled child/descendants, may double-count shared pages, and can miss peaks. Fixtures do not predict TTS speed.",
+      "model_key": "soprano",
+      "modes": [
+        {
+          "process_wall_seconds": 6.447907207999378,
+          "rss_samples": 28,
+          "runs": [
+            {
+              "audio_seconds": 19.328,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4947968,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 4.169996827840805e-07,
+              "encode_seconds": 0.0009864999883575365,
+              "encoded_bytes": 1237036,
+              "frames": 618496,
+              "generation_seconds": 1.6155915830022423,
+              "parent_load_seconds": 3.102336292009568,
+              "parent_peak_rss_bytes": 445300736,
+              "prepare_seconds": 0.26596833299845457,
+              "repeat": 1,
+              "rtf": 0.25790992989436595,
+              "sample_rate": 32000,
+              "success": true,
+              "wall_seconds": 4.984883124998305
+            },
+            {
+              "audio_seconds": 19.328,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4947968,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 7.500057108700275e-07,
+              "encode_seconds": 0.0007035829912638292,
+              "encoded_bytes": 1237036,
+              "frames": 618496,
+              "generation_seconds": 1.310735624996596,
+              "parent_load_seconds": 0.0003626670077210292,
+              "parent_peak_rss_bytes": 452296704,
+              "prepare_seconds": 0.00494270799390506,
+              "repeat": 2,
+              "rtf": 0.06812631068890712,
+              "sample_rate": 32000,
+              "success": true,
+              "wall_seconds": 1.3167453329951968
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 451084288,
+          "workers": 1
+        },
+        {
+          "process_wall_seconds": 6.5284783329989295,
+          "rss_samples": 29,
+          "runs": [
+            {
+              "audio_seconds": 18.112,
+              "cache_state": "first",
+              "channels": 1,
+              "chunk_pcm_bytes": 4636672,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 6.250047590583563e-07,
+              "encode_seconds": 0.0009180839988403022,
+              "encoded_bytes": 1159212,
+              "frames": 579584,
+              "generation_seconds": 3.705993583003874,
+              "parent_load_seconds": 0.00034691698965616524,
+              "parent_peak_rss_bytes": 81182720,
+              "prepare_seconds": 0.282020166006987,
+              "repeat": 1,
+              "rtf": 0.2202561492383015,
+              "sample_rate": 32000,
+              "success": true,
+              "wall_seconds": 3.9892793750041164
+            },
+            {
+              "audio_seconds": 19.136,
+              "cache_state": "repeat",
+              "channels": 1,
+              "chunk_pcm_bytes": 4898816,
+              "chunks": 3,
+              "combined_pcm_bytes": 0,
+              "concatenate_seconds": 6.659975042566657e-07,
+              "encode_seconds": 0.0007590419991174713,
+              "encoded_bytes": 1224748,
+              "frames": 612352,
+              "generation_seconds": 2.385826249999809,
+              "parent_load_seconds": 0.0003569590044207871,
+              "parent_peak_rss_bytes": 88080384,
+              "prepare_seconds": 0.00460512499557808,
+              "repeat": 2,
+              "rtf": 0.1249763817932917,
+              "sample_rate": 32000,
+              "success": true,
+              "wall_seconds": 2.3915480419964297
+            }
+          ],
+          "sampled_peak_tree_rss_bytes": 992821248,
+          "workers": 2
+        }
+      ],
+      "parallel_batch_size": 12,
+      "preflight_seconds": 0.6515200840076432
+    }
+  }
+}

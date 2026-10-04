@@ -4,11 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CONDA_ENV="${CONDA_ENV:-tts}"
 INPUT_FILE="${INPUT_FILE:-$ROOT_DIR/tests_output/_smoke_input.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/tests_output/smoke_models}"
 VOICE_NAME="${VOICE_NAME:-Emma}"
-SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-0}"
+OFFLINE="${OFFLINE:-0}"
 
 MODELS=(
   "kokoro"
@@ -42,22 +41,21 @@ is_prompt_model() {
   return 1
 }
 
-build_cmd() {
+run_model() {
   local model="$1"
   local out_file="$2"
   local -a cmd=(
-    conda run -n "$CONDA_ENV"
-    python Libro-tts.py "$INPUT_FILE"
+    bash "$ROOT_DIR/run.sh" "$INPUT_FILE"
     --model "$model"
     --output "$out_file"
   )
-  if [[ "$SKIP_PREFLIGHT" == "1" ]]; then
-    cmd+=(--skip-mlx-preflight)
+  if [[ "$OFFLINE" == "1" ]]; then
+    cmd+=(--offline)
   fi
   if is_prompt_model "$model"; then
     cmd+=(--voice "$VOICE_NAME")
   fi
-  printf '%q ' "${cmd[@]}"
+  "${cmd[@]}"
 }
 
 echo "Running smoke test for ${#MODELS[@]} models..."
@@ -72,9 +70,7 @@ for model in "${MODELS[@]}"; do
   out_file="$OUTPUT_DIR/${model}.wav"
   log_file="$OUTPUT_DIR/${model}.log"
   echo "[$model] starting..."
-  cmd="$(build_cmd "$model" "$out_file")"
-
-  if eval "$cmd" >"$log_file" 2>&1; then
+  if run_model "$model" "$out_file" >"$log_file" 2>&1; then
     if [[ -s "$out_file" ]]; then
       echo "[$model] PASS -> $out_file"
       ((passed+=1))
